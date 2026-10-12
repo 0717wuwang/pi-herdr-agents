@@ -63,6 +63,16 @@ pi
 
 Restart or `/reload` Pi after installation. Review package source before you install any Pi package.
 
+### Optional methodology pack
+
+The optional [pi-herdr-clean-craft](https://github.com/giuseppecrj/pi-herdr-clean-craft) pack provides six explicit-only skills. Its `craft-mode` hub coordinates TDD, refactoring, architecture review, quality audits, and mutation testing. It supplies instructions, not roles or an execution runtime.
+
+```bash
+pi install npm:pi-herdr-clean-craft@0.1.0
+```
+
+Start with `/skill:craft-mode` followed by your task. With host 3.2.1, the `skills` argument does not deliver the skill with a standalone child's task. Instead, name the skill and reference files in the task and have the child read them first. See the [compatibility notes](https://github.com/giuseppecrj/pi-herdr-clean-craft/blob/main/docs/compatibility.md).
+
 ## Quick start
 
 A bare launch needs no installed role. Ask Pi to delegate in plain language:
