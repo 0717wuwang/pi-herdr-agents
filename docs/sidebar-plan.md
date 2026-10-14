@@ -150,7 +150,7 @@ Delivery units 2 to 5 are implemented in the working tree and reviewed. See
 README's sidebar markers section.
 
 - Plugin: `plugins/sidebar/` with `herdr-plugin.toml`, `sidebar.mjs`, and a
-  README. The manifest declares `min_herdr_version = "0.9.2"` and
+  README. The manifest declares `min_herdr_version = "0.9.0"` and
   `platforms = ["linux"]`, because Herdr accepts only plain versions and the
   host marks nothing outside Linux.
 - Host setting: `sidebar.enabled` in `config.json`, `false` by default.

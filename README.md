@@ -252,7 +252,7 @@ The optional [Pi Herdr Agents Sidebar](plugins/sidebar/README.md) Herdr plugin a
 
 - `pi-herdr-agents` version `3.2.0` or later, with `sidebar.enabled` turned on
 - Linux, because the extension identifies child processes through `/proc`
-- Herdr with the agent view API. The tested build is `0.9.2-preview.2026-09-29-8e78f929d8f0`. Other builds accepted by the `0.9.2` minimum are untested.
+- Herdr `0.9.0` or later, the first release with the agent view API. Tested on `0.9.1` and `0.9.2-preview.2026-09-29-8e78f929d8f0`; other builds are untested.
 - `node` on the `PATH` of the Herdr server
 
 Setup has two parts. Neither part works alone.
