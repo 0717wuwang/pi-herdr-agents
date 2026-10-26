@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-04
-- **Scope:** `giuseppecrj/pi-herdr-agents`
+- **Scope:** `0717wuwang/pi-herdr-agents`
 - **Supersedes:** Only ADR-0008's restriction on adding a runtime adapter seam without a second real execution path
 
 ## Decision

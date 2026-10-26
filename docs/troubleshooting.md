@@ -15,7 +15,7 @@ If the entry exists, spawning and result extraction worked; investigate parent w
 Git package refs are pinned. To move an installed development copy back to the current `main`, install that ref explicitly and reload the active Pi session:
 
 ```bash
-pi install git:github.com/giuseppecrj/pi-herdr-agents@main
+pi install git:github.com/0717wuwang/pi-herdr-agents@main
 # Then run /reload inside Pi.
 ```
 

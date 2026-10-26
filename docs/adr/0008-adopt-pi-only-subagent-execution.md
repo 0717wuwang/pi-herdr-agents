@@ -2,7 +2,7 @@
 
 - **Status:** Accepted (implemented)
 - **Date:** 2026-08-10
-- **Scope:** `giuseppecrj/pi-herdr-agents`
+- **Scope:** `0717wuwang/pi-herdr-agents`
 - **Supersedes:** The external CLI runtime-adapter provisions of ADR-0002
 
 ## Decision

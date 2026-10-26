@@ -2,7 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-10-05
-- **Scope:** `giuseppecrj/pi-herdr-agents`
+- **Scope:** `0717wuwang/pi-herdr-agents`
 - **Supersedes:** [ADR-0001](0001-btw-ephemeral-side-questions.md); the bundled-role
   provisions of [ADR-0003](0003-installable-role-packs.md); the shipped role and
   workflow mapping in [ADR-0002](0002-agent-workflow-skill-runtime-taxonomy.md)

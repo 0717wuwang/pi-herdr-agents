@@ -3,7 +3,7 @@
 - **Status:** Accepted; bundled-role provisions superseded by [ADR-0013](0013-pack-neutral-execution-host.md)
 - **Date:** 2026-08-02 (bundled layer retired 2026-10-05)
 - **Decision owners:** `acrnm`
-- **Scope:** `giuseppecrj/pi-herdr-agents`
+- **Scope:** `0717wuwang/pi-herdr-agents`
 
 ## Decision
 

@@ -1,6 +1,6 @@
 # Pi Herdr Agents Sidebar
 
-![Pi Herdr Agents: a parent Pi session delegating to parallel child agents in dedicated Herdr panes, an isolated worktree and a retained session, with a live status widget.](https://raw.githubusercontent.com/giuseppecrj/pi-herdr-agents/main/docs/assets/pi-herdr-agents-gallery.png)
+![Pi Herdr Agents: a parent Pi session delegating to parallel child agents in dedicated Herdr panes, an isolated worktree and a retained session, with a live status widget.](https://raw.githubusercontent.com/0717wuwang/pi-herdr-agents/main/docs/assets/pi-herdr-agents-gallery.png)
 
 > **Compatibility.** Sidebar support requires `pi-herdr-agents` version `3.2.0` or later. On macOS it requires a release newer than `3.2.1`.
 
@@ -33,7 +33,7 @@ Setup has two parts. Install the Herdr plugin, then enable markers in a compatib
 Install the plugin from GitHub. Herdr shows the manifest and commands for review:
 
 ```bash
-herdr plugin install giuseppecrj/pi-herdr-agents/plugins/sidebar
+herdr plugin install 0717wuwang/pi-herdr-agents/plugins/sidebar
 ```
 
 For another published branch, tag, or commit, add `--ref` followed by that revision. The revision must contain the plugin directory.
@@ -49,7 +49,7 @@ herdr integration install pi
 If you do not already load `pi-herdr-agents` version `3.2.0` or later, install the latest npm release in Pi:
 
 ```bash
-pi install npm:pi-herdr-agents
+pi install npm:@1368/pi-herdr-agents
 ```
 
 Use `pi list` to check your existing package sources. If a copy from another source is enabled, disable that copy with `pi config` before loading the npm package. Do not load both copies. Start Pi inside Herdr.

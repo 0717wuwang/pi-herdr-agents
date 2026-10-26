@@ -3,7 +3,7 @@
 **Date:** 2026-08-03
 **Question:** What are the architectures, execution/data flows, and extension points of first-party `pi-dynamic-workflows` and `DannyMac180/sol-advisor`, and which ideas transfer to a potential `pi-herdr-subagents` workflow feature?
 **Method:** Read-only review of GitHub source/docs clones. No code modified.
-**Local transfer context (not the research targets):** `giuseppecrj/pi-herdr-agents` ADR-0002 taxonomy and draft orchestrator-designed-workflows spec.
+**Local transfer context (not the research targets):** `0717wuwang/pi-herdr-agents` ADR-0002 taxonomy and draft orchestrator-designed-workflows spec.
 
 > This is preliminary research. The later ADRs and [`../orchestrated-review-workflow-plan.md`](../orchestrated-review-workflow-plan.md) supersede its early recommendation for a declarative workflow document.
 

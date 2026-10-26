@@ -16,7 +16,7 @@ Do not design a release that creates a GitHub Release without a successful npm p
 
 You need:
 
-- Permission to manage this repository's GitHub Actions settings and npm package access for `pi-herdr-agents`
+- Permission to manage this repository's GitHub Actions settings and npm package access for `@1368/pi-herdr-agents`
 - A clean local `main` branch
 
 The **CI** workflow (`.github/workflows/ci.yml`) runs on pushes and pull
@@ -59,9 +59,9 @@ Do not release from skipped Herdr tests. Confirm the package preview includes `R
 
 After the package exists on npm, steady-state releases use npm trusted publishing (OIDC). No long-lived `NPM_TOKEN` is required.
 
-1. Open the package settings for `pi-herdr-agents` on [npmjs.com](https://www.npmjs.com/).
+1. Open the package settings for `@1368/pi-herdr-agents` on [npmjs.com](https://www.npmjs.com/).
 2. Add a trusted publisher for GitHub Actions with:
-   - Organization or user: `giuseppecrj`
+   - Organization or user: `0717wuwang`
    - Repository: `pi-herdr-agents`
    - Workflow filename: `publish.yml`
    - Allowed action: `npm publish`
@@ -100,16 +100,16 @@ You can rerun a failed or incomplete release from **Actions → Release → Run 
 After the workflow succeeds, inspect the published package:
 
 ```bash
-npm view pi-herdr-agents
+npm view @1368/pi-herdr-agents
 ```
 
 Test installation through Pi:
 
 ```bash
-pi install npm:pi-herdr-agents
+pi install npm:@1368/pi-herdr-agents
 ```
 
-The package should appear at <https://pi.dev/packages/pi-herdr-agents> after the gallery indexes the npm release.
+The package should appear at <https://pi.dev/packages/@1368/pi-herdr-agents> after the gallery indexes the npm release.
 
 ## Troubleshooting
 
@@ -119,7 +119,7 @@ The workflow stops if the matching version tag already points to a different com
 
 ### npm rejects authentication
 
-Confirm that the trusted publisher matches owner `giuseppecrj`, repository `pi-herdr-agents`, and workflow `publish.yml`, that the job has `id-token: write`, and that the runner is GitHub-hosted. If a release reports that `NPM_TOKEN` is bootstrap-only, remove the secret and use the trusted publisher.
+Confirm that the trusted publisher matches owner `0717wuwang`, repository `pi-herdr-agents`, and workflow `publish.yml`, that the job has `id-token: write`, and that the runner is GitHub-hosted. If a release reports that `NPM_TOKEN` is bootstrap-only, remove the secret and use the trusted publisher.
 
 ### npm reports that the version already exists
 

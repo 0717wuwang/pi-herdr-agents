@@ -3,7 +3,7 @@
 - **Status:** Superseded by [ADR-0013](0013-pack-neutral-execution-host.md); `/btw` and `/btw-close` were removed, not relocated
 - **Date:** 2026-07-31
 - **Decision owners:** `acrnm`
-- **Scope:** `giuseppecrj/pi-herdr-agents`
+- **Scope:** `0717wuwang/pi-herdr-agents`
 - **Decision baseline:** legacy source commit `77d7d029312880f63b29838b3c329a1e4059e029` (not carried into the clean repository history)
 
 ## Context
@@ -136,7 +136,7 @@ npm pack --dry-run
 
 ## References
 
-- [Pi Herdr Agents](https://github.com/giuseppecrj/pi-herdr-agents)
+- [Pi Herdr Agents](https://github.com/0717wuwang/pi-herdr-agents)
 - [Nanocodex BTW controller](https://github.com/gakonst/nanocodex/blob/b1314ebcd602b77af7d2ab5153286f3a1795bbfe/web/src/agentController.ts)
 - [Pi extension API](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/extensions.md)
 - [Pi session format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md)

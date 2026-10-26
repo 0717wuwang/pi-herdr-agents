@@ -5,7 +5,7 @@
 - **Status:** Accepted in part; external CLI provisions superseded
 - **Date:** 2026-08-02
 - **Decision owners:** `acrnm`
-- **Scope:** `giuseppecrj/pi-herdr-agents`
+- **Scope:** `0717wuwang/pi-herdr-agents`
 - **Historical tracking:** legacy issues #4 and #5 (not carried into the clean repository)
 - **Superseded in part by:** ADR-0008 removes the external CLI runtime adapter
 
