@@ -185,7 +185,11 @@ describe("pack-neutral package contents", () => {
 				copyFileSync(join(root, file), join(dir, file));
 			mkdirSync(join(dir, ".pi-lens-probe-home"));
 			writeFileSync(join(dir, ".pi-lens-probe-home", "probe.log"), "log\n");
-			writeFileSync(join(dir, "kept.txt"), "kept\n");
+			mkdirSync(join(dir, "pi-extension/subagents"), { recursive: true });
+			writeFileSync(
+				join(dir, "pi-extension/subagents/index.ts"),
+				"export {};\n",
+			);
 			const packed = JSON.parse(
 				execFileSync(
 					"npm",
@@ -202,7 +206,10 @@ describe("pack-neutral package contents", () => {
 				? packed[0]
 				: Object.values(packed)[0];
 			const files = packedEntry.files.map(({ path }) => path);
-			assert.ok(files.includes("kept.txt"), `fixture not packed: ${files}`);
+			assert.ok(
+				files.includes("pi-extension/subagents/index.ts"),
+				`whitelisted file not packed: ${files}`,
+			);
 			assert.deepEqual(
 				files.filter((path) => path.startsWith(".pi-lens-probe-home/")),
 				[],

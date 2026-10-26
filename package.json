@@ -12,6 +12,26 @@
     "orchestration"
   ],
   "license": "MIT",
+  "files": [
+    "pi-extension/",
+    "maestro/",
+    "plugins/",
+    "skills/",
+    "docs/tools.md",
+    "docs/configuration.md",
+    "docs/roles.md",
+    "docs/troubleshooting.md",
+    "docs/development.md",
+    "docs/worktree-subagents.md",
+    "AGENTS.md",
+    "CONTEXT.md",
+    "RELEASING.md",
+    "examples/role-pack/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "config.json.example"
+  ],
   "author": {
     "name": "Giuseppe Rodriguez",
     "url": "https://github.com/0717wuwang"
