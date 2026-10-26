@@ -199,10 +199,19 @@ function getHerdrCurrentPaneInfo(): HerdrCurrentPaneInfo {
 	};
 }
 
+/** Herdr flags carrying a process environment, keyed deterministically. */
+function envArgs(env?: Record<string, string>): string[] {
+	if (!env) return [];
+	return Object.keys(env)
+		.sort()
+		.flatMap((key) => ["--env", `${key}=${env[key]}`]);
+}
+
 function buildTabCreateArgs(
 	name: string,
 	cwd: string,
 	workspaceId: string,
+	env?: Record<string, string>,
 ): string[] {
 	return [
 		"tab",
@@ -214,6 +223,7 @@ function buildTabCreateArgs(
 		"--cwd",
 		cwd,
 		"--no-focus",
+		...envArgs(env),
 	];
 }
 
@@ -221,6 +231,7 @@ function buildPaneSplitArgs(
 	parentPaneId: string,
 	direction: "right" | "down",
 	cwd: string,
+	env?: Record<string, string>,
 ): string[] {
 	return [
 		"pane",
@@ -231,6 +242,7 @@ function buildPaneSplitArgs(
 		"--no-focus",
 		"--cwd",
 		cwd,
+		...envArgs(env),
 	];
 }
 
@@ -255,11 +267,15 @@ function buildWorktreeCreateArgs(
 	];
 }
 
-export function createHerdrSurface(name: string, cwd = process.cwd()): string {
+export function createHerdrSurface(
+	name: string,
+	cwd = process.cwd(),
+	env?: Record<string, string>,
+): string {
 	// Legacy tab mode targets the caller workspace explicitly; Herdr's
 	// implicit default may be another workspace.
 	const { workspace_id: workspaceId } = getHerdrCurrentPaneInfo();
-	const output = herdrExec(buildTabCreateArgs(name, cwd, workspaceId));
+	const output = herdrExec(buildTabCreateArgs(name, cwd, workspaceId, env));
 	const paneId = extractHerdrRootPaneId(output, "tab create");
 	try {
 		herdrExec(["pane", "rename", paneId, name]);
@@ -330,6 +346,7 @@ export function createHerdrGroupedSurface(
 	cwd: string,
 	maxPerTab: number,
 	direction: "right" | "down",
+	env?: Record<string, string>,
 ): string {
 	const callerWorkspace = getHerdrCurrentPaneInfo().workspace_id;
 	const parsed = parseHerdrJson(herdrExec(["workspace", "list"]));
@@ -377,7 +394,7 @@ export function createHerdrGroupedSurface(
 		const anchor =
 			live.find((pane) => owned.panes.has(pane.pane_id)) ?? live[0];
 		paneId = extractHerdrPaneId(
-			herdrExec(buildPaneSplitArgs(anchor.pane_id, direction, cwd)),
+			herdrExec(buildPaneSplitArgs(anchor.pane_id, direction, cwd, env)),
 			"pane split",
 		);
 		owned.panes.add(paneId);
@@ -388,7 +405,7 @@ export function createHerdrGroupedSurface(
 			(tab) => tab.workspaceId === workspaceId,
 		).length;
 		const label = count === 0 ? "Agents" : `Agents ${count + 1}`;
-		const output = herdrExec(buildTabCreateArgs(label, cwd, workspaceId));
+		const output = herdrExec(buildTabCreateArgs(label, cwd, workspaceId, env));
 		paneId = extractHerdrRootPaneId(output, "tab create");
 		const tabId = parseHerdrJson(output)?.result?.tab?.tab_id;
 		if (!isString(tabId) || !tabId) {
@@ -911,9 +928,12 @@ export function createHerdrSurfaceSplit(
 	name: string,
 	direction: "right" | "down",
 	cwd = process.cwd(),
+	env?: Record<string, string>,
 ): string {
 	const parentPaneId = getHerdrParentPaneId();
-	const output = herdrExec(buildPaneSplitArgs(parentPaneId, direction, cwd));
+	const output = herdrExec(
+		buildPaneSplitArgs(parentPaneId, direction, cwd, env),
+	);
 	const paneId = extractHerdrPaneId(output, "pane split");
 	try {
 		herdrExec(["pane", "rename", paneId, name]);
@@ -921,6 +941,82 @@ export function createHerdrSurfaceSplit(
 		// Optional.
 	}
 	return paneId;
+}
+
+/**
+ * Split a surface so its replacement can carry launch variables. Herdr's
+ * `worktree create` accepts no `--env`, so a worktree's own pane is discarded
+ * once the replacement is in the same workspace.
+ */
+export function splitHerdrSurface(
+	sourcePaneId: string,
+	cwd: string,
+	env?: Record<string, string>,
+): string {
+	const output = herdrExec(buildPaneSplitArgs(sourcePaneId, "right", cwd, env));
+	const paneId = extractHerdrPaneId(output, "pane split");
+	closeHerdrSurface(sourcePaneId);
+	return paneId;
+}
+
+function buildAgentStartArgs(
+	paneId: string,
+	name: string,
+	kind: string,
+	argv: string[],
+	timeoutMs?: number,
+): string[] {
+	return [
+		"agent",
+		"start",
+		name,
+		"--kind",
+		kind,
+		"--pane",
+		paneId,
+		"--timeout",
+		String(timeoutMs ?? 30000),
+		"--",
+		...argv,
+	];
+}
+
+/**
+ * `agent start` needs Herdr 0.9+. Older builds reject it at argument parse, so
+ * probe the subcommand list once and fail the dispatch with guidance instead of
+ * surfacing raw clap text.
+ */
+let herdrAgentStartSupported: boolean | undefined;
+export function supportsHerdrAgentStart(): boolean {
+	if (herdrAgentStartSupported !== undefined) return herdrAgentStartSupported;
+	let output = "";
+	try {
+		output = herdrExec(["agent", "--help"]);
+	} catch {
+		return (herdrAgentStartSupported = false);
+	}
+	return (herdrAgentStartSupported = /(?:^|\s)start(?:\s|$)/m.test(output));
+}
+
+/**
+ * Hand Herdr the pi command and let it run the agent in the pane. Successful
+ * resolution means the expected agent owns the terminal and accepts input.
+ */
+export async function startHerdrAgent(
+	paneId: string,
+	name: string,
+	kind: string,
+	argv: string[],
+	timeoutMs?: number,
+): Promise<void> {
+	if (!supportsHerdrAgentStart()) {
+		throw new Error(
+			"Herdr cannot launch agents natively: the `herdr agent start` command is missing. Update Herdr (`herdr update`) and retry.",
+		);
+	}
+	await herdrExecAsync(
+		buildAgentStartArgs(paneId, name, kind, argv, timeoutMs),
+	);
 }
 
 export function readHerdrScreen(surface: string, lines = 50): string {

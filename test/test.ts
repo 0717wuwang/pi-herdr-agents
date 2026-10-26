@@ -393,8 +393,7 @@ async function persistentFixtureIO(): Promise<PiPersistentIO> {
 		direction: "right",
 		maxPerTab: 4,
 	});
-	ops.waitForShellReady = async () => {};
-	ops.runScript = (_id, _command, options) => options.scriptPath;
+	ops.startAgent = async () => {};
 	const supervision = new SupervisionCoordinator(
 		async () => ({ complete: true, panes: [] }),
 		(id) => surface.inspectSurface(id),
@@ -562,6 +561,8 @@ async function withAdapterHost(run: (f: any) => Promise<void>) {
 		const surface = new FakeSurfaceProvider();
 		const restorers: Array<() => void> = [];
 		const commands: string[] = [];
+		const envs: Array<Record<string, string>> = [];
+		const launchCwds: string[] = [];
 		const closed: string[] = [];
 		let registrations = 0;
 		const wake = new FileWakeRegistry();
@@ -605,31 +606,32 @@ async function withAdapterHost(run: (f: any) => Promise<void>) {
 				closed.push(id);
 				await close(id);
 			});
-			patch(launchOperations, "createPane", (name: string, cwd?: string) =>
-				surface.createSurface({
-					name,
-					cwd: cwd ?? paths.projectDir,
-					placement: { kind: "tab" },
-				}),
+			patch(
+				launchOperations,
+				"createPane",
+				(name: string, cwd?: string, env?: Record<string, string>) => {
+					launchCwds.push(cwd ?? paths.projectDir);
+					envs.push(env ?? {});
+					return surface.createSurface({
+						name,
+						cwd: cwd ?? paths.projectDir,
+						env,
+						placement: { kind: "tab" },
+					});
+				},
 			);
-			patch(launchOperations, "waitForShellReady", async () => {});
-			patch(surface, "waitForShellReady", async () => {});
 			patch(
 				surface,
-				"runScript",
-				(_id: string, command: string, opts: { scriptPath: string }) => {
-					commands.push(command);
-					mkdirSync(dirname(opts.scriptPath), { recursive: true });
-					writeFileSync(opts.scriptPath, command);
-					return opts.scriptPath;
+				"startAgent",
+				(_surface: string, options: { argv: string[] }) => {
+					commands.push(options.argv.join(" "));
 				},
 			);
 			patch(
 				launchOperations,
-				"runScript",
-				(_id: string, command: string, opts: any) => {
-					commands.push(command);
-					return opts.scriptPath;
+				"startAgent",
+				(_surface: string, options: { argv: string[] }) => {
+					commands.push(options.argv.join(" "));
 				},
 			);
 		}
@@ -699,6 +701,8 @@ async function withAdapterHost(run: (f: any) => Promise<void>) {
 				ctx,
 				surface,
 				commands,
+				envs,
+				launchCwds,
 				closed,
 				launch,
 				finish,
@@ -1147,11 +1151,10 @@ describe("host adapter migration", () => {
 				readSubagentSessionPolicy(child.sessionFile).tools,
 				null,
 			);
-			assert.ok(f.commands[0].includes("PI_SUBAGENT_AUTO_EXIT=1"));
-			assert.ok(
-				!f.commands[0].includes(
-					`PI_CODING_AGENT_DIR='${join(f.projectDir, ".pi", "agent")}'`,
-				),
+			assert.equal(f.envs[0].PI_SUBAGENT_AUTO_EXIT, "1");
+			assert.notEqual(
+				f.envs[0].PI_CODING_AGENT_DIR,
+				join(f.projectDir, ".pi", "agent"),
 			);
 			await f.finish(child);
 			assert.equal(f.registrations(), 1);
@@ -1186,16 +1189,13 @@ describe("host adapter migration", () => {
 			const policy = readSubagentSessionPolicy(child.sessionFile);
 			assert.deepEqual(policy.tools, ["read"]);
 			assert.ok(policy.deniedTools.includes("subagents_write_task_models"));
-			assert.ok(
-				f.commands[0].includes(
-					`PI_CODING_AGENT_DIR='${join(roleCwd, ".pi", "agent")}'`,
-				),
+			assert.equal(
+				f.envs[0].PI_CODING_AGENT_DIR,
+				join(roleCwd, ".pi", "agent"),
 			);
 			assert.match(f.commands[0], /\/skill:one.*\/skill:two/);
-			assert.ok(!f.commands[0].includes("PI_SUBAGENT_AUTO_EXIT=1"));
-			const identityPath = f.commands[0].match(
-				/--system-prompt '([^']+)'/,
-			)?.[1];
+			assert.equal(f.envs[0].PI_SUBAGENT_AUTO_EXIT, "0");
+			const identityPath = f.commands[0].match(/--system-prompt (\S+)/)?.[1];
 			assert.ok(identityPath);
 			assert.equal(readFileSync(identityPath, "utf8").trim(), "Named identity");
 			assert.equal(
@@ -1210,10 +1210,9 @@ describe("host adapter migration", () => {
 				cwd: ".",
 			});
 			assert.equal(f.handle(explicit).cwd, f.projectDir);
-			assert.ok(
-				f.commands[1].includes(
-					`PI_CODING_AGENT_DIR='${join(f.projectDir, ".pi", "agent")}'`,
-				),
+			assert.equal(
+				f.envs[1].PI_CODING_AGENT_DIR,
+				join(f.projectDir, ".pi", "agent"),
 			);
 			await f.finish(explicit);
 		}));
@@ -1238,10 +1237,10 @@ describe("host adapter migration", () => {
 				const promptPath = mode
 					? command.match(
 							mode === "replace"
-								? /--system-prompt '([^']+)'/
-								: /--append-system-prompt '([^']+)'/,
+								? /--system-prompt (\S+)/
+								: /--append-system-prompt (\S+)/,
 						)?.[1]
-					: command.match(/'@([^']+)'/)?.[1];
+					: command.match(/@(\S+)/)?.[1];
 				assert.ok(
 					promptPath,
 					"child command must reference the prompt artifact",
@@ -1267,7 +1266,7 @@ describe("host adapter migration", () => {
 			});
 			assert.ok(child);
 			assert.doesNotMatch(f.commands[0], /--(?:append-)?system-prompt/);
-			const promptPath = f.commands[0].match(/'@([^']+)'/)?.[1];
+			const promptPath = f.commands[0].match(/@(\S+)/)?.[1];
 			assert.ok(promptPath);
 			assert.equal(
 				readFileSync(promptPath, "utf8"),
@@ -1407,11 +1406,11 @@ describe("host adapter migration", () => {
 			const secondLaunch = new Promise<void>((resolve) => {
 				launched = resolve;
 			});
-			const runScript = f.launchOperations.runScript;
-			f.patch(f.launchOperations, "runScript", (...args: any[]) => {
-				const script = runScript(...args);
+			const startAgent = f.launchOperations.startAgent;
+			f.patch(f.launchOperations, "startAgent", (...args: any[]) => {
+				const result = startAgent(...args);
 				launched();
-				return script;
+				return result;
 			});
 			await f.finish(first, {
 				type: "error",
@@ -1514,7 +1513,7 @@ describe("host adapter migration", () => {
 					),
 				);
 				assert.equal(f.handle(second).cwd, expectedCwd);
-				assert.ok(f.commands[1].includes(`cd '${expectedCwd}' && `));
+				assert.equal(f.launchCwds[1], expectedCwd);
 				assert.deepEqual(second.runtimePlan, {
 					provider: "fake",
 					modelId: "second",
@@ -2471,11 +2470,11 @@ describe("subagent_cancel public tool", { timeout: 20_000 }, () => {
 			const gate = new Promise<void>((resolve) => {
 				release = resolve;
 			});
-			const runScript = f.launchOperations.runScript;
-			f.patch(f.launchOperations, "runScript", async (...args: any[]) => {
+			const startAgent = f.launchOperations.startAgent;
+			f.patch(f.launchOperations, "startAgent", async (...args: any[]) => {
 				launched();
 				await gate;
-				return runScript(...args);
+				return startAgent(...args);
 			});
 			await f.finish(first, {
 				type: "error",
@@ -3335,16 +3334,25 @@ describe("subagent resume launch policy", () => {
 		};
 	}
 
-	function launchOperations(commands: string[], createPane = () => "pane") {
+	function launchOperations(
+		commands: string[],
+		envs: Array<Record<string, string>> = [],
+		createPane = (
+			_name: string,
+			_cwd?: string,
+			_env?: Record<string, string>,
+		) => "pane",
+	) {
 		return {
-			createPane,
+			createPane(name: string, cwd?: string, env?: Record<string, string>) {
+				envs.push(env ?? {});
+				return createPane(name, cwd, env);
+			},
 			createWorktree() {
 				throw new Error("worktree creation is not expected");
 			},
-			async waitForShellReady() {},
-			runScript(_surface: string, command: string) {
-				commands.push(command);
-				return "/tmp/launch.sh";
+			startAgent(_surface: string, options: { argv: string[] }) {
+				commands.push(options.argv.join(" "));
 			},
 			closePane() {},
 		};
@@ -3354,6 +3362,7 @@ describe("subagent resume launch policy", () => {
 		const dir = createTestDir();
 		try {
 			const commands: string[] = [];
+			const envs: Array<Record<string, string>> = [];
 			const parentSession = join(dir, "parent.jsonl");
 			writeFileSync(
 				parentSession,
@@ -3382,7 +3391,7 @@ describe("subagent resume launch policy", () => {
 						sessionMode: "standalone",
 					},
 				},
-				launchOperations(commands),
+				launchOperations(commands, envs),
 			);
 			// The mocked launch does not start Pi, which normally writes this header.
 			writeFileSync(
@@ -3408,7 +3417,7 @@ describe("subagent resume launch policy", () => {
 					},
 					behavior: { autoExit: false },
 				},
-				launchOperations(commands),
+				launchOperations(commands, envs),
 			);
 			await launchPiSubagent(
 				{
@@ -3420,17 +3429,13 @@ describe("subagent resume launch policy", () => {
 						sessionDir: join(dir, "parent-sessions"),
 					},
 				},
-				launchOperations(commands),
+				launchOperations(commands, envs),
 			);
 
-			assert.match(
-				commands[1],
-				/PI_DENY_TOOLS='subagent,subagent_resume'.*--tools 'read,caller_ping,subagent_done'/,
-			);
-			assert.match(
-				commands[2],
-				/PI_DENY_TOOLS='subagent,subagent_resume'.*--tools 'read,caller_ping'/,
-			);
+			assert.match(commands[1], /--tools read,caller_ping,subagent_done/);
+			assert.equal(envs[1].PI_DENY_TOOLS, "subagent,subagent_resume");
+			assert.match(commands[2], /--tools read,caller_ping(?:\s|$)/);
+			assert.equal(envs[2].PI_DENY_TOOLS, "subagent,subagent_resume");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -3441,7 +3446,7 @@ describe("subagent resume launch policy", () => {
 		try {
 			const sessionFile = join(dir, "resume.jsonl");
 			let panes = 0;
-			const operations = launchOperations([], () => {
+			const operations = launchOperations([], [], () => {
 				panes += 1;
 				return "unexpected-pane";
 			});
@@ -8386,7 +8391,6 @@ describe("completion.ts", () => {
 			const result = await waitForCompletion(new AbortController().signal, {
 				intervalMs: 1,
 				sessionFile,
-				readTerminalTail: async () => "",
 			});
 			assert.deepEqual(result, {
 				reason: "ping",
@@ -8399,107 +8403,9 @@ describe("completion.ts", () => {
 		}
 	});
 
-	it("returns the terminal sentinel exit code", async () => {
-		const result = await waitForCompletion(new AbortController().signal, {
-			intervalMs: 1,
-			readTerminalTail: async () => "output\n__SUBAGENT_DONE_17__\n",
-		});
-		assert.deepEqual(result, { reason: "sentinel", exitCode: 17 });
-	});
-
-	it("prefers an error sidecar published during the terminal read", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "completion-sentinel-race-"));
-		const sessionFile = join(dir, "child.jsonl");
-		try {
-			const result = await waitForCompletion(new AbortController().signal, {
-				intervalMs: 1,
-				sessionFile,
-				readTerminalTail: async () => {
-					await Promise.resolve();
-					writeFileSync(
-						`${sessionFile}.exit`,
-						JSON.stringify({
-							type: "error",
-							errorMessage: "account/model rejected",
-							stopReason: "error",
-						}),
-					);
-					return "output\n__SUBAGENT_DONE_1__\n";
-				},
-			});
-			assert.deepEqual(result, {
-				reason: "error",
-				exitCode: 1,
-				errorMessage: "account/model rejected",
-			});
-			assert.equal(existsSync(`${sessionFile}.exit`), false);
-		} finally {
-			rmSync(dir, { recursive: true, force: true });
-		}
-	});
-
-	it("prefers semantic sidecars published during a zero-exit terminal read", async () => {
-		for (const [payload, expected] of [
-			[
-				{ type: "ping", name: "Scout", message: "need input" },
-				{
-					reason: "ping",
-					exitCode: 0,
-					ping: { name: "Scout", message: "need input" },
-				},
-			],
-			[
-				{ type: "error", errorMessage: "late semantic failure" },
-				{
-					reason: "error",
-					exitCode: 1,
-					errorMessage: "late semantic failure",
-				},
-			],
-		] as const) {
-			const dir = mkdtempSync(join(tmpdir(), "completion-zero-race-"));
-			const sessionFile = join(dir, "child.jsonl");
-			try {
-				const result = await waitForCompletion(new AbortController().signal, {
-					intervalMs: 1,
-					sessionFile,
-					readTerminalTail: async () => {
-						writeFileSync(`${sessionFile}.exit`, JSON.stringify(payload));
-						return "__SUBAGENT_DONE_0__";
-					},
-				});
-				assert.deepEqual(result, expected);
-			} finally {
-				rmSync(dir, { recursive: true, force: true });
-			}
-		}
-	});
-
-	it("retries transient terminal read failures and reports ticks", async () => {
-		let reads = 0;
-		let ticks = 0;
-		const result = await waitForCompletion(new AbortController().signal, {
-			intervalMs: 1,
-			readTerminalTail: async () => {
-				reads += 1;
-				if (reads === 1) throw new Error("pane temporarily unavailable");
-				return "__SUBAGENT_DONE_0__";
-			},
-			onTick: () => {
-				ticks += 1;
-			},
-		});
-		assert.deepEqual(result, { reason: "sentinel", exitCode: 0 });
-		assert.equal(reads, 2);
-		assert.equal(ticks, 1);
-	});
-
 	it("returns a failure when the pane explicitly disappears", async () => {
 		const result = await waitForCompletion(new AbortController().signal, {
 			intervalMs: 1,
-			readTerminalTail: async () => {
-				throw new Error("pane read failed");
-			},
 			inspectPane: async () => ({ kind: "missing", error: "pane_not_found" }),
 			paneDisappearanceGraceMs: 0,
 		});
@@ -8518,7 +8424,6 @@ describe("completion.ts", () => {
 			const result = await waitForCompletion(new AbortController().signal, {
 				intervalMs: 1,
 				sessionFile,
-				readTerminalTail: async () => "",
 				inspectPane: async () => {
 					writeFileSync(
 						`${sessionFile}.exit`,
@@ -8543,7 +8448,6 @@ describe("completion.ts", () => {
 			const result = await waitForCompletion(new AbortController().signal, {
 				intervalMs: 1,
 				sessionFile,
-				readTerminalTail: async () => "",
 				inspectPane: async () => ({ kind: "missing", error: "pane_not_found" }),
 				paneDisappearanceGraceMs: 150,
 			});
@@ -8554,72 +8458,46 @@ describe("completion.ts", () => {
 		}
 	});
 
-	it("keeps an ambiguous pane read failure retryable while the pane exists", async () => {
-		let reads = 0;
-		const result = await waitForCompletion(new AbortController().signal, {
-			intervalMs: 1,
-			readTerminalTail: async () => {
-				reads += 1;
-				if (reads === 1) throw new Error("socket unavailable");
-				return "__SUBAGENT_DONE_0__";
-			},
-			inspectPane: async () => ({
-				kind: "present",
-				observedAt: 0,
-				agentStatus: "working",
-			}),
-		});
-		assert.equal(result.exitCode, 0);
-		assert.equal(reads, 2);
-	});
-
-	it("treats presence-check throws as unknown and keeps polling", async () => {
-		let reads = 0;
-		const result = await waitForCompletion(new AbortController().signal, {
-			intervalMs: 1,
-			readTerminalTail: async () => {
-				reads += 1;
-				if (reads === 1) throw new Error("pane read failed");
-				return "__SUBAGENT_DONE_0__";
-			},
-			inspectPane: async () => {
-				throw new Error("herdr list failed");
-			},
-		});
-		assert.equal(result.exitCode, 0);
-		assert.equal(reads, 2);
-	});
-
-	it("inspects herdr status even when terminal reads succeed", async () => {
-		let reads = 0;
+	it("records pane inspections while polling", async () => {
+		let polls = 0;
 		const inspections: string[] = [];
-		const result = await waitForCompletion(new AbortController().signal, {
-			intervalMs: 1,
-			readTerminalTail: async () => {
-				reads += 1;
-				return reads === 1 ? "shell output" : "__SUBAGENT_DONE_0__";
-			},
-			inspectPane: async () => ({
-				kind: "present",
-				observedAt: 2_000,
-				agentStatus: "blocked",
-			}),
-			onPaneInspection: (inspection) =>
-				inspections.push(
-					inspection.kind === "present"
-						? inspection.agentStatus
-						: inspection.kind,
-				),
-		});
-		assert.equal(result.exitCode, 0);
-		assert.deepEqual(inspections, ["blocked"]);
+		const dir = mkdtempSync(join(tmpdir(), "completion-inspect-"));
+		const sessionFile = join(dir, "child.jsonl");
+		try {
+			const result = await waitForCompletion(new AbortController().signal, {
+				intervalMs: 1,
+				sessionFile,
+				inspectPane: async () => {
+					polls += 1;
+					if (polls === 2)
+						writeFileSync(
+							`${sessionFile}.exit`,
+							JSON.stringify({ type: "done" }),
+						);
+					return {
+						kind: "present",
+						observedAt: 2_000,
+						agentStatus: "blocked",
+					};
+				},
+				onPaneInspection: (inspection) =>
+					inspections.push(
+						inspection.kind === "present"
+							? inspection.agentStatus
+							: inspection.kind,
+					),
+			});
+			assert.deepEqual(result, { reason: "done", exitCode: 0 });
+			assert.equal(inspections[0], "blocked");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("rejects promptly when aborted", async () => {
 		const controller = new AbortController();
 		const completion = waitForCompletion(controller.signal, {
 			intervalMs: 10_000,
-			readTerminalTail: async () => "",
 		});
 		controller.abort();
 		await assert.rejects(
@@ -10850,7 +10728,6 @@ describe("Task13 demand-driven persistent I/O", () => {
 					surface: "pane",
 					startTime: 0,
 					sessionFile: join(dir, "session.jsonl"),
-					launchScriptFile: "",
 					activityFile: "",
 					interactive: false,
 					runtimePlan: undefined,
@@ -10959,7 +10836,6 @@ describe("Task13 demand-driven persistent I/O", () => {
 				surface: "pane",
 				startTime: 0,
 				sessionFile: join(dir, "session.jsonl"),
-				launchScriptFile: "",
 				activityFile: "",
 				interactive: false,
 				runtimePlan: undefined,
@@ -11022,7 +10898,6 @@ describe("Task13 demand-driven persistent I/O", () => {
 					surface: "pane",
 					startTime: 0,
 					sessionFile: join(dir, "session.jsonl"),
-					launchScriptFile: "",
 					activityFile: "",
 					interactive: false,
 					runtimePlan: undefined,
@@ -12752,8 +12627,8 @@ describe("subagent interruption", () => {
 							throw new Error("unexpected ordinary pane");
 						},
 						createWorktree: () => worktree,
-						waitForShellReady: async () => {},
-						runScript: () => {
+						splitSurface: () => "w9:p2",
+						startAgent: () => {
 							throw new Error("pane rejected command");
 						},
 						closePane: () => {

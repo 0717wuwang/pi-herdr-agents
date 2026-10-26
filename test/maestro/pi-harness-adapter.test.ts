@@ -55,7 +55,6 @@ function fixture() {
 	const surface = new FakeSurfaceProvider();
 	// Fake only the process launch. Session policy, artifact creation and completion are real.
 	const operations = launchOperationsFromSurface(surface, paneConfig);
-	operations.runScript = (_surface, _command, options) => options.scriptPath;
 	const wake = new FileWakeRegistry();
 	const supervision = new SupervisionCoordinator(
 		async () => ({
@@ -224,10 +223,11 @@ describe("PiHarnessAdapter", () => {
 			mkdirSync(join(f.root, ".pi", "agent"), { recursive: true });
 			const roleCwd = join(f.root, "agent", "role-folder");
 			mkdirSync(join(roleCwd, ".pi", "agent"), { recursive: true });
-			const commands: string[] = [];
-			f.operations.runScript = (_surface, command, options) => {
-				commands.push(command);
-				return options.scriptPath;
+			const envs: Array<Record<string, string>> = [];
+			const createPane = f.operations.createPane;
+			f.operations.createPane = (name, cwd, env) => {
+				envs.push(env ?? {});
+				return createPane(name, cwd, env);
 			};
 			const plan = {
 				provider: "fake",
@@ -246,19 +246,9 @@ describe("PiHarnessAdapter", () => {
 				if (!("cwd" in origin) && !("roleCwd" in origin))
 					assert.ok(h.sessionId.startsWith(join(f.root, "agent", "sessions")));
 			}
-			assert.ok(
-				!commands[0].includes(
-					`PI_CODING_AGENT_DIR='${join(f.root, ".pi", "agent")}'`,
-				),
-			);
-			assert.match(
-				commands[1],
-				new RegExp(`PI_CODING_AGENT_DIR='${join(f.root, ".pi", "agent")}'`),
-			);
-			assert.match(
-				commands[2],
-				new RegExp(`PI_CODING_AGENT_DIR='${join(roleCwd, ".pi", "agent")}'`),
-			);
+			assert.ok(envs[0].PI_CODING_AGENT_DIR !== join(f.root, ".pi", "agent"));
+			assert.equal(envs[1].PI_CODING_AGENT_DIR, join(f.root, ".pi", "agent"));
+			assert.equal(envs[2].PI_CODING_AGENT_DIR, join(roleCwd, ".pi", "agent"));
 		}));
 	it("launches the relocated protocol and maps the session handle", async () =>
 		usingFixture(async (f) => {
@@ -536,9 +526,8 @@ describe("PiHarnessAdapter", () => {
 	it("preserves lineage-only defaults, explicit system prompt, and tool overrides", async () =>
 		usingFixture(async (f) => {
 			let command = "";
-			f.operations.runScript = (_surface, value, options) => {
-				command = value;
-				return options.scriptPath;
+			f.operations.startAgent = (_surface, options) => {
+				command = options.argv.join(" ");
 			};
 			const h = await f.adapter.spawn({
 				...f.options,
@@ -558,7 +547,7 @@ describe("PiHarnessAdapter", () => {
 			);
 			assert.match(header.parentSession, /parent\.jsonl$/);
 			assert.deepEqual(readSubagentSessionPolicy(h.sessionId).tools, ["read"]);
-			const promptPath = command.match(/--system-prompt '([^']+)'/)?.[1];
+			const promptPath = command.match(/--system-prompt (\S+)/)?.[1];
 			assert.ok(promptPath);
 			assert.equal(readFileSync(promptPath, "utf8"), "Override identity");
 		}));

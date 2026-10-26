@@ -3,10 +3,9 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { isNonEmptyString, isString } from "../../core/config/type-guards.ts";
 
 const ABORT_MESSAGE = "Aborted while waiting for subagent to finish";
-const TERMINAL_SENTINEL = /__SUBAGENT_DONE_(\d+)__/;
 
 export interface CompletionResult {
-	reason: "done" | "ping" | "sentinel" | "error";
+	reason: "done" | "ping" | "error";
 	exitCode: number;
 	ping?: { name: string; message: string };
 	errorMessage?: string;
@@ -14,7 +13,6 @@ export interface CompletionResult {
 
 export interface CompletionOptions {
 	intervalMs: number;
-	readTerminalTail: () => Promise<string>;
 	inspectPane?: () => Promise<import("../../core/types.ts").PaneInspection>;
 	/** Bounded artifact grace after explicit pane disappearance. Default: 500ms. */
 	paneDisappearanceGraceMs?: number;
@@ -79,11 +77,6 @@ function consumeExitSidecar(
 	}
 }
 
-function terminalExitCode(screen: string): number | null {
-	const match = screen.match(TERMINAL_SENTINEL);
-	return match ? Number.parseInt(match[1], 10) : null;
-}
-
 function completionArtifact(
 	options: CompletionOptions,
 ): CompletionResult | null {
@@ -142,30 +135,6 @@ export async function waitForCompletion(
 		const sidecarResult = consumeExitSidecar(options.sessionFile);
 		if (sidecarResult) return sidecarResult;
 		options.onLocalEvidence?.();
-
-		if (reconcile)
-			try {
-				const exitCode = terminalExitCode(await options.readTerminalTail());
-				if (exitCode !== null) {
-					// The shell sentinel can become readable while the child publishes its
-					// authoritative semantic record. Always recheck after the asynchronous
-					// terminal read; a zero exit can race a ping or error just like a failure.
-					options.onLocalEvidence?.();
-					const racedCompletion = completionArtifact(options);
-					if (racedCompletion) return racedCompletion;
-					if (exitCode !== 0) {
-						const delayedCompletion = await waitForDelayedSidecar(
-							signal,
-							options,
-						);
-						if (delayedCompletion) return delayedCompletion;
-					}
-					return { reason: "sentinel", exitCode };
-				}
-			} catch {
-				// Terminal reads are only sentinel/output probes; Herdr status is polled
-				// independently below, even when terminal reads succeed.
-			}
 
 		if (reconcile && options.inspectPane) {
 			let inspection: import("../../core/types.ts").PaneInspection;

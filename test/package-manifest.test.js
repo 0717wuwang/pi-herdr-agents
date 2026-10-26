@@ -48,14 +48,18 @@ const ordinaryReviewClauses = [
 // such as orchestrate and plan belong to role packs.
 const hostSkills = ["pi-herdr-agents"];
 const hostSkillFiles = new Set(hostSkills.map((n) => `skills/${n}/SKILL.md`));
-const packageFiles = new Set(
-	JSON.parse(
-		execFileSync("npm", ["pack", "--dry-run", "--json"], {
-			cwd: root,
-			encoding: "utf8",
-		}),
-	)[0].files.map(({ path }) => path),
+const packedManifest = JSON.parse(
+	execFileSync("npm", ["pack", "--dry-run", "--json"], {
+		cwd: root,
+		encoding: "utf8",
+	}),
 );
+// npm scripts receive the manifest keyed by package id, while a standalone
+// `npm pack --json` returns a bare array. Accept both.
+const packedEntry = Array.isArray(packedManifest)
+	? packedManifest[0]
+	: Object.values(packedManifest)[0];
+const packageFiles = new Set(packedEntry.files.map(({ path }) => path));
 
 describe("production package manifest", () => {
 	it("declares the public npm identity and publish metadata", () => {
@@ -182,7 +186,7 @@ describe("pack-neutral package contents", () => {
 			mkdirSync(join(dir, ".pi-lens-probe-home"));
 			writeFileSync(join(dir, ".pi-lens-probe-home", "probe.log"), "log\n");
 			writeFileSync(join(dir, "kept.txt"), "kept\n");
-			const files = JSON.parse(
+			const packed = JSON.parse(
 				execFileSync(
 					"npm",
 					["pack", "--dry-run", "--json", "--ignore-scripts"],
@@ -191,7 +195,13 @@ describe("pack-neutral package contents", () => {
 						encoding: "utf8",
 					},
 				),
-			)[0].files.map(({ path }) => path);
+			);
+			// npm scripts receive the manifest keyed by package id, while a
+			// standalone `npm pack --json` returns a bare array. Accept both.
+			const packedEntry = Array.isArray(packed)
+				? packed[0]
+				: Object.values(packed)[0];
+			const files = packedEntry.files.map(({ path }) => path);
 			assert.ok(files.includes("kept.txt"), `fixture not packed: ${files}`);
 			assert.deepEqual(
 				files.filter((path) => path.startsWith(".pi-lens-probe-home/")),

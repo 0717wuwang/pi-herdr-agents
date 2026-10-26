@@ -10,10 +10,10 @@ import {
 import type { ResolvedRuntimePlan } from "../../core/routing.ts";
 import type { PaneConfig } from "../../core/config/pane-config.ts";
 import { isNonEmptyString } from "../../core/config/type-guards.ts";
-import { shellQuote } from "../../core/shell.ts";
 import type {
 	SurfaceProvider,
 	WorktreeSurface,
+	SurfaceEnvironment,
 } from "../../core/surface-provider.ts";
 import { WorktreeProvisioningError } from "../../core/surface-provider.ts";
 import type {
@@ -24,11 +24,9 @@ import type {
 import {
 	getSubagentProcessIdentityFile,
 	linuxProcessProbe,
-	readLinuxProcessEnvironment,
 	readProcessIdentityRecord,
 	verifyProcessIdentityRecord,
 	type PiProcessIdentity,
-	type ProcessEnvironmentReader,
 	type ProcessIdentityProbe,
 } from "./process-identity.ts";
 import {
@@ -106,7 +104,6 @@ export interface PiRunningChild {
 	surface: string;
 	startTime: number;
 	sessionFile: string;
-	launchScriptFile: string;
 	activityFile: string;
 	interactive: boolean;
 	runtimePlan: ResolvedRuntimePlan | undefined;
@@ -154,25 +151,32 @@ export interface WorktreeSurfaceForLaunch {
 export interface PiLaunchOperations {
 	/** Required for managed worktree launches; ordinary panes need no Git effects. */
 	worktree?: WorktreeOperations;
-	createPane(name: string, cwd?: string): MaybePromise<string>;
+	createPane(
+		name: string,
+		cwd?: string,
+		env?: Record<string, string>,
+	): MaybePromise<string>;
+	/** Replace a surface so it carries launch variables; Herdr's `worktree create` cannot. */
+	splitSurface(
+		pane: string,
+		cwd: string,
+		env: Record<string, string>,
+	): MaybePromise<string>;
 	createWorktree(
 		name: string,
 		cwd: string,
 		branch: string,
 		base: string,
 	): MaybePromise<WorktreeSurfaceForLaunch>;
-	waitForShellReady(surface: string): Promise<void>;
-	runScript(
+	/**
+	 * Launch the child agent in the pane through the provider's own launcher,
+	 * which resolves only once the agent is interactive.
+	 */
+	startAgent(
 		surface: string,
-		command: string,
-		options: { scriptPath: string; scriptPreamble: string },
-	): MaybePromise<string>;
+		options: { name: string; kind: string; argv: string[] },
+	): MaybePromise<void>;
 	closePane(pane: string): MaybePromise<void>;
-	waitForPiReady?(
-		surface: string,
-		sessionFile: string,
-		cwd: string,
-	): Promise<void>;
 	focusWorkspace?(workspaceId: string): MaybePromise<void>;
 	/** Bounded readiness capture of a worktree child's verified process identity. */
 	captureProcessIdentity?(
@@ -208,60 +212,6 @@ function worktreeSurfaceForLaunch(
  * rewrites its command line, so `--session` is never readiness evidence.
  * Nothing inside Pi reads it.
  */
-export const PI_LAUNCH_SESSION_ENV = "PI_HERDR_AGENTS_SESSION";
-
-export function isExpectedPiProcess(
-	process: {
-		pid: number;
-		name?: string;
-		argv0?: string;
-		cwd?: string;
-	},
-	sessionFile: string,
-	cwd: string,
-	readEnvironment: ProcessEnvironmentReader = readLinuxProcessEnvironment,
-): boolean {
-	return (
-		(process.name === "pi" || process.argv0?.split("/").pop() === "pi") &&
-		process.cwd === cwd &&
-		readEnvironment(process.pid)?.get(PI_LAUNCH_SESSION_ENV) === sessionFile
-	);
-}
-
-async function waitForSurfacePiReady(
-	provider: SurfaceProvider,
-	surface: string,
-	sessionFile: string,
-	cwd: string,
-	options: { timeoutMs?: number; intervalMs?: number } = {},
-): Promise<void> {
-	const timeoutMs = options.timeoutMs ?? 10_000;
-	const intervalMs = options.intervalMs ?? 50;
-	const deadline = Date.now() + timeoutMs;
-	let lastError = "expected Pi process not observed";
-
-	while (Date.now() <= deadline) {
-		try {
-			const info = await Promise.resolve(provider.getProcessInfo(surface));
-			// An unreadable process (one that is exiting) proves nothing, but must
-			// not hide a matching sibling.
-			for (const process of info.foregroundProcesses) {
-				try {
-					if (isExpectedPiProcess(process, sessionFile, cwd)) return;
-				} catch (error) {
-					lastError = errorMessage(error);
-				}
-			}
-		} catch (error) {
-			lastError = errorMessage(error);
-		}
-		if (Date.now() >= deadline) break;
-		await new Promise((resolve) => setTimeout(resolve, intervalMs));
-	}
-	throw new Error(
-		`Timed out waiting for Pi session ${sessionFile} in Herdr pane ${surface}: ${lastError}`,
-	);
-}
 
 /**
  * Wait for the child to publish its own identity, then accept it only while
@@ -357,11 +307,12 @@ export function launchOperationsFromSurface(
 ): PiLaunchOperations {
 	return {
 		worktree,
-		createPane(name, cwd) {
+		createPane(name, cwd, env) {
 			return provider.createSurface({
 				name,
 				cwd: cwd ?? process.cwd(),
 				placement: placementFromPaneConfig(config),
+				env,
 			});
 		},
 		async createWorktree(name, cwd, branch, base) {
@@ -370,17 +321,14 @@ export function launchOperationsFromSurface(
 			);
 			return worktreeSurfaceForLaunch(worktree);
 		},
-		waitForShellReady(surface) {
-			return provider.waitForShellReady(surface);
+		startAgent(surface, options) {
+			return provider.startAgent(surface, options);
 		},
-		runScript(surface, command, options) {
-			return provider.runScript(surface, command, options);
+		splitSurface(pane, cwd, env) {
+			return provider.splitSurface(pane, { cwd, env });
 		},
 		closePane(pane) {
 			return provider.closeSurface(pane);
-		},
-		waitForPiReady(surface, sessionFile, cwd) {
-			return waitForSurfacePiReady(provider, surface, sessionFile, cwd);
 		},
 		focusWorkspace(workspaceId) {
 			return provider.focusWorkspace(workspaceId);
@@ -408,21 +356,22 @@ interface ResolvedLaunch {
 	taskDelivery: "direct" | "artifact";
 }
 
-interface PreparedSurface {
-	surface: string;
+/** Everything resolvable before the pane exists: the checkout and agent dirs. */
+interface PreparedTarget {
 	targetCwd: string;
 	effectiveAgentDir: string;
 	localAgentDir: string | null;
 	worktree?: WorktreeLaunch;
 }
 
-interface PreparedSession extends PreparedSurface {
+interface PreparedSession extends PreparedTarget {
 	sessionFile: string;
 	activityFile: string;
 	processIdentityFile?: string;
 }
 
 interface PreparedArtifacts extends PreparedSession {
+	surface: string;
 	taskArg: string;
 	systemPromptFile?: string;
 }
@@ -475,49 +424,25 @@ async function launchFreshPiSubagent(
 	operations: PiLaunchOperations,
 ): Promise<PiRunningChild> {
 	const resolved = resolveLaunchRequest(request);
-	let surface: PreparedSurface | undefined;
+	let target: PreparedTarget | undefined;
+	let surface: string | undefined;
 
 	try {
-		surface = await prepareLaunchSurface(resolved, operations);
-		const session = prepareChildSession(resolved, surface, operations);
-		const handoffArtifacts = request.handoff
-			? prepareTaskArtifacts(resolved, session, operations)
-			: undefined;
-		await confirmShellReady(session, operations);
-		const artifacts =
-			handoffArtifacts ?? prepareTaskArtifacts(resolved, session, operations);
-		const command = buildPiCommand(resolved, artifacts);
-		const launchScriptFile = await startPiProcess(
-			resolved,
-			artifacts,
-			command,
-			operations,
-		);
-		if (request.handoff) {
-			if (!operations.waitForPiReady) {
-				throw new Error("Pi startup confirmation is unavailable");
-			}
-			await operations.waitForPiReady(
-				artifacts.surface,
-				artifacts.sessionFile,
-				artifacts.targetCwd,
-			);
-			if (artifacts.worktree) {
-				requireWorktreeOperations(operations).persistWorktreeResult(
-					artifacts.worktree,
-					"running",
-				);
-			}
-		}
-		const running = createRunningChild(resolved, artifacts, launchScriptFile);
+		target = await prepareLaunchTarget(resolved, operations);
+		const session = prepareChildSession(resolved, target, operations);
+		const artifacts = prepareTaskArtifacts(resolved, session, operations);
+		surface = await attachLaunchSurface(resolved, target, session, operations);
+		const launched: PreparedArtifacts = { ...artifacts, surface };
+		await startPiAgent(resolved, operations, launched);
+		const running = createRunningChild(resolved, launched);
 		startProcessIdentityCapture(running, operations);
 		return running;
 	} catch (error) {
-		if (!surface) throw error;
-		if (!surface.worktree) {
+		if (!target) throw error;
+		if (!target.worktree) {
 			if (!request.surface) {
 				try {
-					await operations.closePane(surface.surface);
+					if (surface) await operations.closePane(surface);
 				} catch {
 					// The launch error remains authoritative when cleanup also fails.
 				}
@@ -525,15 +450,15 @@ async function launchFreshPiSubagent(
 			throw error;
 		}
 		const worktreeOps = requireWorktreeOperations(operations);
-		const handoff = worktreeOps.captureWorktreeHandoff(surface.worktree);
+		const handoff = worktreeOps.captureWorktreeHandoff(target.worktree);
 		try {
-			worktreeOps.persistWorktreeResult(surface.worktree, "failed", handoff);
+			worktreeOps.persistWorktreeResult(target.worktree, "failed", handoff);
 		} catch {
 			// The launch error remains authoritative when persistence also fails.
 		}
 		throw new Error(
-			`Failed to launch subagent; worktree retained at ${surface.worktree.path} ` +
-				`(workspace ${surface.worktree.workspaceId}): ${errorMessage(error)}`,
+			`Failed to launch subagent; worktree retained at ${target.worktree.path} ` +
+				`(workspace ${target.worktree.workspaceId}): ${errorMessage(error)}`,
 		);
 	}
 }
@@ -576,16 +501,13 @@ function resolveLaunchRequest(request: FreshPiLaunchRequest): ResolvedLaunch {
 	};
 }
 
-async function prepareLaunchSurface(
+async function prepareLaunchTarget(
 	resolved: ResolvedLaunch,
 	operations: PiLaunchOperations,
-): Promise<PreparedSurface> {
+): Promise<PreparedTarget> {
 	const { request } = resolved;
 	if (!request.worktree) {
 		return {
-			surface:
-				request.surface ??
-				(await operations.createPane(request.name, resolved.sourceCwd)),
 			targetCwd: resolved.sourceCwd,
 			effectiveAgentDir: resolved.localAgentDir ?? resolved.agentDir,
 			localAgentDir: resolved.localAgentDir,
@@ -658,7 +580,6 @@ async function prepareLaunchSurface(
 	const isolatedAgentDir = join(created.path, ".pi", "agent");
 	const hasIsolatedAgentDir = existsSync(isolatedAgentDir);
 	return {
-		surface: created.paneId,
 		targetCwd: created.path,
 		effectiveAgentDir: hasIsolatedAgentDir
 			? isolatedAgentDir
@@ -668,9 +589,40 @@ async function prepareLaunchSurface(
 	};
 }
 
+/**
+ * Adopt or create the pane carrying the child's launch variables. Every
+ * variable is derived before this runs, so none of them names the pane.
+ */
+async function attachLaunchSurface(
+	resolved: ResolvedLaunch,
+	target: PreparedTarget,
+	session: PreparedSession,
+	operations: PiLaunchOperations,
+): Promise<string> {
+	const { request } = resolved;
+	if (request.surface) return request.surface;
+	const env = buildLaunchEnv(resolved, session);
+	if (target.worktree) {
+		// `worktree create` cannot pass variables, so the pane it opened is
+		// replaced in its own workspace and discarded.
+		const worktreeOps = requireWorktreeOperations(operations);
+		const surface = await operations.splitSurface(
+			target.worktree.paneId,
+			target.targetCwd,
+			env,
+		);
+		target.worktree.paneId = surface;
+		worktreeOps.writeWorktreeManifest(target.worktree.manifestFile, {
+			paneId: surface,
+		});
+		return surface;
+	}
+	return operations.createPane(request.name, target.targetCwd, env);
+}
+
 function prepareChildSession(
 	resolved: ResolvedLaunch,
-	surface: PreparedSurface,
+	surface: PreparedTarget,
 	operations: PiLaunchOperations,
 ): PreparedSession {
 	const sessionDir = getDefaultSessionDirFor(
@@ -724,13 +676,6 @@ function prepareChildSession(
 	};
 }
 
-async function confirmShellReady(
-	session: PreparedSession,
-	operations: PiLaunchOperations,
-): Promise<void> {
-	await operations.waitForShellReady(session.surface);
-}
-
 function buildWorktreeHandoffMessage(
 	request: FreshPiLaunchRequest,
 	worktree: WorktreeLaunch,
@@ -754,7 +699,7 @@ function prepareTaskArtifacts(
 	resolved: ResolvedLaunch,
 	session: PreparedSession,
 	operations: PiLaunchOperations,
-): PreparedArtifacts {
+): Omit<PreparedArtifacts, "surface"> {
 	const { request } = resolved;
 	if (request.handoff) {
 		if (!session.worktree) {
@@ -831,123 +776,99 @@ function prepareTaskArtifacts(
 	return { ...session, taskArg, systemPromptFile };
 }
 
-function buildPiCommand(
+/**
+ * Variables the child reads as process environment. Built before the pane
+ * exists, so every value is derivable from the request: nothing depends on the
+ * pane id. `PI_SUBAGENT_SURFACE` is no longer set because nothing reads it.
+ */
+function buildLaunchEnv(
+	resolved: ResolvedLaunch,
+	session: PreparedSession,
+): SurfaceEnvironment {
+	const env: SurfaceEnvironment = {
+		PI_DENY_TOOLS: resolved.request.behavior.deniedTools.join(","),
+		PI_SUBAGENT_NAME: resolved.request.name,
+		PI_SUBAGENT_AGENT: resolved.request.agent ?? "",
+		PI_SUBAGENT_AUTO_EXIT: resolved.request.behavior.autoExit ? "1" : "0",
+		PI_SUBAGENT_PERSISTENT: resolved.request.behavior.persistent ? "1" : "",
+		PI_SUBAGENT_GENERATION_ID: resolved.request.behavior.generationId ?? "",
+		PI_SUBAGENT_TASK_ID: resolved.request.behavior.taskId ?? "",
+		PI_SUBAGENT_SESSION: session.sessionFile,
+		PI_SUBAGENT_ID: resolved.id,
+		PI_SUBAGENT_ACTIVITY_FILE: session.activityFile,
+		PI_SUBAGENT_PROCESS_FILE: session.processIdentityFile ?? "",
+	};
+	const agentDir = session.localAgentDir ?? process.env.PI_CODING_AGENT_DIR;
+	if (agentDir) {
+		env.PI_CODING_AGENT_DIR = agentDir;
+	}
+	return env;
+}
+
+function buildPiArgv(
 	resolved: ResolvedLaunch,
 	artifacts: PreparedArtifacts,
-): string {
-	const { request } = resolved;
-	const parts = [
+): string[] {
+	const behavior = resolved.request.behavior;
+	const argv = [
 		"pi",
 		"--session",
-		shellQuote(artifacts.sessionFile),
-		...(request.handoff
-			? []
-			: ["-e", shellQuote(join(SUBAGENTS_DIR, "child", "subagent-done.ts"))]),
-		"--model",
-		shellQuote(request.runtimePlan.model),
-		"--thinking",
-		shellQuote(request.runtimePlan.thinking),
+		artifacts.sessionFile,
+		...(!resolved.request.handoff
+			? ["-e", join(SUBAGENTS_DIR, "child", "subagent-done.ts")]
+			: []),
 	];
+	const plan = resolved.request.runtimePlan;
+	if (plan.model) argv.push("--model", plan.model);
+	if (plan.thinking) argv.push("--thinking", plan.thinking);
+	const toolAllowlist = buildSubagentToolAllowlist(
+		behavior.tools,
+		behavior.autoExit,
+	);
+	if (toolAllowlist) argv.push("--tools", toolAllowlist);
 	if (artifacts.systemPromptFile) {
-		parts.push(
-			request.behavior.systemPromptMode === "replace"
+		argv.push(
+			behavior.systemPromptMode === "replace"
 				? "--system-prompt"
 				: "--append-system-prompt",
-			shellQuote(artifacts.systemPromptFile),
+			artifacts.systemPromptFile,
 		);
 	}
-	const toolAllowlist = buildSubagentToolAllowlist(
-		request.behavior.tools,
-		request.behavior.autoExit,
-	);
-	if (toolAllowlist) parts.push("--tools", shellQuote(toolAllowlist));
-	if (!request.handoff) {
+	if (!resolved.request.handoff) {
 		for (const prompt of buildPromptArgs(
-			request.behavior.skills,
+			behavior.skills,
 			resolved.taskDelivery,
 			artifacts.taskArg,
 		)) {
-			parts.push(shellQuote(prompt));
+			argv.push(prompt);
 		}
 	}
-
-	const env = [`${PI_LAUNCH_SESSION_ENV}=${shellQuote(artifacts.sessionFile)}`];
-	if (artifacts.localAgentDir) {
-		env.push(`PI_CODING_AGENT_DIR=${shellQuote(artifacts.localAgentDir)}`);
-	} else if (process.env.PI_CODING_AGENT_DIR) {
-		env.push(
-			`PI_CODING_AGENT_DIR=${shellQuote(process.env.PI_CODING_AGENT_DIR)}`,
-		);
-	}
-	if (!request.handoff) {
-		if (request.behavior.deniedTools.length > 0) {
-			env.push(
-				`PI_DENY_TOOLS=${shellQuote(request.behavior.deniedTools.join(","))}`,
-			);
-		}
-		env.push(`PI_SUBAGENT_NAME=${shellQuote(request.name)}`);
-		if (request.agent)
-			env.push(`PI_SUBAGENT_AGENT=${shellQuote(request.agent)}`);
-		env.push(`PI_SUBAGENT_AUTO_EXIT=${request.behavior.autoExit ? "1" : "0"}`);
-		if (request.behavior.persistent) {
-			env.push("PI_SUBAGENT_PERSISTENT=1");
-			env.push(
-				`PI_SUBAGENT_GENERATION_ID=${shellQuote(request.behavior.generationId ?? "")}`,
-			);
-			env.push(
-				`PI_SUBAGENT_TASK_ID=${shellQuote(request.behavior.taskId ?? "")}`,
-			);
-		}
-		env.push(`PI_SUBAGENT_SESSION=${shellQuote(artifacts.sessionFile)}`);
-		env.push(`PI_SUBAGENT_ID=${shellQuote(resolved.id)}`);
-		env.push(`PI_SUBAGENT_ACTIVITY_FILE=${shellQuote(artifacts.activityFile)}`);
-		env.push(`PI_SUBAGENT_SURFACE=${shellQuote(artifacts.surface)}`);
-		if (artifacts.processIdentityFile)
-			env.push(
-				`PI_SUBAGENT_PROCESS_FILE=${shellQuote(artifacts.processIdentityFile)}`,
-			);
-	}
-
-	const piCommand =
-		`cd ${shellQuote(artifacts.targetCwd)} && ` +
-		`${env.join(" ")} ${parts.join(" ")}`;
-	return request.handoff
-		? piCommand
-		: `${piCommand}; echo '__SUBAGENT_DONE_'$?'__'`;
+	return argv;
 }
 
-async function startPiProcess(
+async function startPiAgent(
 	resolved: ResolvedLaunch,
-	artifacts: PreparedArtifacts,
-	command: string,
 	operations: PiLaunchOperations,
-): Promise<string> {
-	const launchScriptFile = join(
-		resolved.artifactDir,
-		"subagent-scripts",
-		`${safeName(resolved.request.name) || "subagent"}-${resolved.id}.sh`,
-	);
-	if (artifacts.worktree && !resolved.request.handoff) {
+	artifacts: PreparedArtifacts,
+): Promise<void> {
+	await operations.startAgent(artifacts.surface, {
+		name: resolved.request.name,
+		kind: "pi",
+		argv: buildPiArgv(resolved, artifacts),
+	});
+	// Herdr reports success only once the agent is able to accept input, so the
+	// managed worktree is already a live checkout by this point.
+	if (artifacts.worktree) {
 		requireWorktreeOperations(operations).persistWorktreeResult(
 			artifacts.worktree,
 			"running",
 		);
 	}
-	return await operations.runScript(artifacts.surface, command, {
-		scriptPath: launchScriptFile,
-		scriptPreamble: [
-			shellComment(`Subagent launch script for ${resolved.request.name}`),
-			shellComment(`Generated: ${new Date().toISOString()}`),
-			shellComment(`Session: ${artifacts.sessionFile}`),
-			shellComment(`Surface: ${artifacts.surface}`),
-		].join("\n"),
-	});
 }
 
 function createRunningChild(
 	resolved: ResolvedLaunch,
 	artifacts: PreparedArtifacts,
-	launchScriptFile: string,
 ): PiRunningChild {
 	return {
 		id: resolved.id,
@@ -957,7 +878,6 @@ function createRunningChild(
 		surface: artifacts.surface,
 		startTime: resolved.startTime,
 		sessionFile: artifacts.sessionFile,
-		launchScriptFile,
 		activityFile: artifacts.activityFile,
 		interactive: resolved.request.behavior.interactive,
 		runtimePlan: resolved.request.runtimePlan,
@@ -1036,70 +956,55 @@ async function launchResumedPiSubagent(
 		(entry) => entry.type === "session",
 	);
 	const cwd = isNonEmptyString(header?.cwd) ? header.cwd : process.cwd();
-	const surface = await operations.createPane(request.name, cwd);
+	const activityFile = getSubagentActivityFile(artifactDir, id);
+	mkdirSync(dirname(activityFile), { recursive: true });
+
+	let messageFile: string | undefined;
+	if (request.message) {
+		messageFile = join(
+			artifactDir,
+			"subagent-resume",
+			`${safeName(request.name) || "resume"}-${timestampForFile(false)}.md`,
+		);
+		mkdirSync(dirname(messageFile), { recursive: true });
+		writeFileSync(messageFile, request.message, "utf8");
+	}
+
+	const toolAllowlist = buildSubagentToolAllowlist(
+		policy.tools?.join(","),
+		autoExit,
+	);
+	const env: SurfaceEnvironment = {
+		PI_SUBAGENT_NAME: request.name,
+		PI_SUBAGENT_SESSION: request.sessionFile,
+		PI_SUBAGENT_ID: id,
+		PI_SUBAGENT_ACTIVITY_FILE: activityFile,
+		PI_SUBAGENT_AUTO_EXIT: autoExit ? "1" : "0",
+	};
+	const agentDir = process.env.PI_CODING_AGENT_DIR;
+	if (agentDir) {
+		env.PI_CODING_AGENT_DIR = agentDir;
+	}
+	if (policy.deniedTools.length > 0) {
+		env.PI_DENY_TOOLS = policy.deniedTools.join(",");
+	}
+	const argv = [
+		"pi",
+		"--session",
+		request.sessionFile,
+		"-e",
+		join(SUBAGENTS_DIR, "child", "subagent-done.ts"),
+	];
+	if (toolAllowlist) argv.push("--tools", toolAllowlist);
+	if (messageFile) argv.push(`@${messageFile}`);
+
+	const surface = await operations.createPane(request.name, cwd, env);
 	try {
-		await operations.waitForShellReady(surface);
-		const activityFile = getSubagentActivityFile(artifactDir, id);
-		mkdirSync(dirname(activityFile), { recursive: true });
-
-		let messageFile: string | undefined;
-		if (request.message) {
-			messageFile = join(
-				artifactDir,
-				"subagent-resume",
-				`${safeName(request.name) || "resume"}-${timestampForFile(false)}.md`,
-			);
-			mkdirSync(dirname(messageFile), { recursive: true });
-			writeFileSync(messageFile, request.message, "utf8");
-		}
-
-		const env = [
-			...(process.env.PI_CODING_AGENT_DIR
-				? [`PI_CODING_AGENT_DIR=${shellQuote(process.env.PI_CODING_AGENT_DIR)}`]
-				: []),
-			...(policy.deniedTools.length > 0
-				? [`PI_DENY_TOOLS=${shellQuote(policy.deniedTools.join(","))}`]
-				: []),
-			`PI_SUBAGENT_NAME=${shellQuote(request.name)}`,
-			`PI_SUBAGENT_SESSION=${shellQuote(request.sessionFile)}`,
-			`PI_SUBAGENT_ID=${shellQuote(id)}`,
-			`PI_SUBAGENT_ACTIVITY_FILE=${shellQuote(activityFile)}`,
-			`PI_SUBAGENT_AUTO_EXIT=${autoExit ? "1" : "0"}`,
-		];
-		const toolAllowlist = buildSubagentToolAllowlist(
-			policy.tools?.join(","),
-			autoExit,
-		);
-		const command = [
-			...env,
-			"pi",
-			"--session",
-			shellQuote(request.sessionFile),
-			...(toolAllowlist ? ["--tools", shellQuote(toolAllowlist)] : []),
-			"-e",
-			shellQuote(join(SUBAGENTS_DIR, "child", "subagent-done.ts")),
-			...(messageFile ? [shellQuote(`@${messageFile}`)] : []),
-		].join(" ");
-		const launchScriptFile = await operations.runScript(
-			surface,
-			`${command}; echo '__SUBAGENT_DONE_'$?'__'`,
-			{
-				scriptPath: join(
-					artifactDir,
-					"subagent-scripts",
-					`${safeName(request.name) || "resume"}-resume-${Date.now()}.sh`,
-				),
-				scriptPreamble: [
-					shellComment(`Subagent resume script for ${request.name}`),
-					shellComment(`Generated: ${new Date().toISOString()}`),
-					shellComment(`Session: ${request.sessionFile}`),
-					shellComment(`Surface: ${surface}`),
-					...(messageFile
-						? [shellComment(`Resume message file: ${messageFile}`)]
-						: []),
-				].join("\n"),
-			},
-		);
+		await operations.startAgent(surface, {
+			name: request.name,
+			kind: "pi",
+			argv,
+		});
 		return {
 			id,
 			name: request.name,
@@ -1107,7 +1012,6 @@ async function launchResumedPiSubagent(
 			surface,
 			startTime,
 			sessionFile: request.sessionFile,
-			launchScriptFile,
 			activityFile,
 			interactive,
 			runtimePlan: undefined,
@@ -1171,10 +1075,6 @@ function timestampForFile(includeMilliseconds = true): string {
 			.slice(0, includeMilliseconds ? 23 : 19) +
 		(includeMilliseconds ? "Z" : "")
 	);
-}
-
-function shellComment(value: string): string {
-	return `# ${value.replace(/[\r\n\u2028\u2029]/g, " ")}`;
 }
 
 function safeName(name: string): string {

@@ -177,7 +177,6 @@ export interface PiRunRecord {
 	surface: string;
 	startTime: number;
 	sessionFile: string;
-	launchScriptFile: string;
 	activityFile: string;
 	interactive: boolean;
 	runtimePlan: ResolvedRuntimePlan | undefined;
@@ -207,7 +206,6 @@ export interface PiStartedMetadata {
 	task: string;
 	agent?: string;
 	sessionFile: string;
-	launchScriptFile?: string;
 	model?: string;
 	thinking?: ThinkingLevel;
 	runtimePlan?: ResolvedRuntimePlan;
@@ -831,7 +829,6 @@ export function createDefaultRunSession(
 				task: child.task,
 				agent: child.agent,
 				sessionFile: child.sessionFile,
-				launchScriptFile: child.launchScriptFile,
 				model: child.runtimePlan?.model,
 				thinking: child.runtimePlan?.thinking,
 				runtimePlan: child.runtimePlan,

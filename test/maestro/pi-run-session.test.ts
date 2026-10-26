@@ -162,10 +162,8 @@ async function makeFixture() {
 		direction: "right",
 		maxPerTab: 4,
 	});
-	operations.waitForShellReady = async () => {};
-	operations.runScript = (_id, command, options) => {
-		commands.push(command);
-		return options.scriptPath;
+	operations.startAgent = (_id, options) => {
+		commands.push(options.argv.join(" "));
 	};
 	const wake = new FileWakeRegistry();
 	const coordinator = new SupervisionCoordinator(
@@ -332,6 +330,12 @@ test("Task17 discovered Role defaults reach the actual runtime launch without sy
 		}).agents[0];
 		f.options.roles.push(definition.role);
 		const session = runtime.createDefaultRunSession(f.options, f.session);
+		const envs: Record<string, string>[] = [];
+		const createPane = f.operations.createPane;
+		f.operations.createPane = (name, cwd, env) => {
+			envs.push(env ?? {});
+			return createPane(name, cwd, env);
+		};
 		const handle = await session.spawn({
 			id: "core-role",
 			name: "core-worker",
@@ -346,11 +350,11 @@ test("Task17 discovered Role defaults reach the actual runtime launch without sy
 		const record = session.getRecord("core-role")!;
 		assert.equal(record.interactive, false);
 		const script = f.commands[0];
-		assert.match(script, /PI_SUBAGENT_AUTO_EXIT=1/);
-		assert.match(script, /PI_DENY_TOOLS=.*write/);
+		assert.equal(envs[0].PI_SUBAGENT_AUTO_EXIT, "1");
+		assert.match(envs[0].PI_DENY_TOOLS, /write/);
 		assert.match(script, /\/skill:first/);
 		assert.match(script, /\/skill:second/);
-		const promptPath = script.match(/--system-prompt '([^']+)'/)?.[1];
+		const promptPath = script.match(/--system-prompt (\S+)/)?.[1];
 		assert.ok(promptPath);
 		assert.equal(readFileSync(promptPath, "utf8"), "Core role identity");
 		f.complete(record);
@@ -410,9 +414,9 @@ for (const mode of ["success", "focus-warning", "readiness-failure"] as const) {
 				git(["worktree", "add", "-q", "-b", branch, path, base]);
 				return { path, branch, workspaceId: "workspace", paneId: "pane" };
 			};
-			f.operations.waitForPiReady = async (_pane, sessionFile, cwd) => {
-				assert.equal(cwd, path);
-				assert.ok(existsSync(sessionFile));
+			f.operations.splitSurface = (pane) => Promise.resolve(pane);
+			f.operations.startAgent = async (_surface, options) => {
+				f.commands.push(options.argv.join(" "));
 				assert.equal(readWorktreeManifest(manifestFile)?.state, "provisioned");
 				entered();
 				await readyRelease;
@@ -464,8 +468,7 @@ for (const mode of ["success", "focus-warning", "readiness-failure"] as const) {
 			const command = f.commands[0];
 			assert.ok(
 				!command.includes("PI_SUBAGENT_") &&
-					!command.includes("subagent-done.ts") &&
-					!command.includes("__SUBAGENT_DONE_"),
+					!command.includes("subagent-done.ts"),
 			);
 			if ("error" in result) {
 				assert.equal(mode, "readiness-failure");
@@ -1175,9 +1178,9 @@ for (const persistent of [false, true])
 				input.plans[0],
 				{ ...input.plans[0], model: "test/two", modelId: "two" },
 			];
-			const run = f.operations.runScript;
+			const run = f.operations.startAgent;
 			let launches = 0;
-			f.operations.runScript = (...args) => {
+			f.operations.startAgent = (...args) => {
 				if (launches++ === 0) throw new Error("first launch raw");
 				return run(...args);
 			};
@@ -1201,7 +1204,7 @@ test("exhausted running fallback acquisition keeps prior provider error and atte
 		];
 		const h = await f.session.spawnPi(input);
 		const r = f.latest()!;
-		f.operations.runScript = () => {
+		f.operations.startAgent = () => {
 			throw new Error("fallback raw launch failure");
 		};
 		const wait = f.session.supervise(h, input.task);
@@ -1270,9 +1273,9 @@ test("per-attempt normalization changes role and opaque generation, never the va
 			};
 		};
 		// Initial acquisition failure still advances when that effective attempt was persistent.
-		const run = f.operations.runScript;
+		const run = f.operations.startAgent;
 		let launches = 0;
-		f.operations.runScript = (...args) => {
+		f.operations.startAgent = (...args) => {
 			if (launches++ === 0) throw new Error("launch fails");
 			return run(...args);
 		};
@@ -1327,7 +1330,7 @@ test("duplicate pending control IDs reject before normalization and suppression 
 		const gate = new Promise<void>((r) => {
 			ready = r;
 		});
-		f.operations.waitForShellReady = async () => {
+		f.operations.startAgent = async () => {
 			waiting();
 			await gate;
 		};

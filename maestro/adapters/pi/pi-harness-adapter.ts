@@ -541,8 +541,6 @@ export class PiHarnessAdapter implements HarnessAdapter {
 					intervalMs: 1000,
 					sessionFile: child.sessionFile,
 					waitForNextCheck: registration.wait,
-					readTerminalTail: async () =>
-						this.options.surface.readScreen(child.surface, 5),
 					inspectPane: registration.inspectPane,
 					onLocalEvidence: () =>
 						this.options.onObservation?.(child, "local-evidence"),

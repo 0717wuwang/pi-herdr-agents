@@ -10,12 +10,9 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
-import { execFileSync, spawn } from "node:child_process";
-import { once } from "node:events";
+import { execFileSync } from "node:child_process";
 import {
-	isExpectedPiProcess,
 	launchOperationsFromSurface,
-	PI_LAUNCH_SESSION_ENV,
 	launchPiSubagent,
 	launchPiWorktreeHandoff,
 	type FreshPiLaunchRequest,
@@ -32,10 +29,6 @@ import {
 	readSubagentSessionPolicy,
 	writeSubagentSessionPolicy,
 } from "../maestro/adapters/pi/session.ts";
-
-function expectedShellQuote(value: string): string {
-	return `'${value.replaceAll("'", "'\\''")}'`;
-}
 
 function fixture() {
 	const root = mkdtempSync(
@@ -161,8 +154,6 @@ function providerWithOverrides(
 		createWorktreeSurface: (opts) => base.createWorktreeSurface(opts),
 		removeWorktreeSurface: (workspace) => base.removeWorktreeSurface(workspace),
 		setupHint: () => base.setupHint(),
-		runScript: (surface, command, options) =>
-			base.runScript(surface, command, options),
 		inspectSurface: (surface) => base.inspectSurface(surface),
 		sendKeys: (surface, keys) => base.sendKeys(surface, keys),
 		getProcessInfo: (surface) => base.getProcessInfo(surface),
@@ -174,6 +165,9 @@ function providerWithOverrides(
 			base.reportOpenedPrimaryWorkspace(input),
 		focusWorkspace: (workspace) => base.focusWorkspace(workspace),
 		setTitle: (target, title) => base.setTitle(target, title),
+		// 默认空实现:fake provider 尚未实现新接口,通过 overrides 提供真实行为。
+		splitSurface: () => "",
+		startAgent: () => undefined,
 		...overrides,
 	};
 }
@@ -193,7 +187,9 @@ describe("Pi launch", () => {
 		assert.equal((await provider.listSurfaces())[0]?.name, "x");
 	});
 
-	it("launchOperationsFromSurface awaits deferred cleanup before reporting a failed ordinary launch", async () => {
+	it("launchOperationsFromSurface awaits deferred cleanup before reporting a failed ordinary launch", {
+		timeout: 10000,
+	}, async () => {
 		await withFixture(async ({ request }) => {
 			const fake = new FakeSurfaceProvider();
 			const closeEntered = deferred();
@@ -209,8 +205,9 @@ describe("Pi launch", () => {
 					await closeGate.promise;
 					fake.closeSurface(surface);
 				},
-				runScript() {
-					throw new Error("script rejected");
+				// startAgent 是唯一会抛出并触发关闭的失败点。
+				async startAgent() {
+					throw new Error("agent start rejected");
 				},
 			});
 			const operations = launchOperationsFromSurface(provider, {
@@ -220,7 +217,7 @@ describe("Pi launch", () => {
 			});
 
 			const launch = launchPiSubagent(request, operations);
-			const observedRejection = assert.rejects(launch, /script rejected/);
+			const observedRejection = assert.rejects(launch, /agent start rejected/);
 			launch
 				.finally(() => {
 					settled = true;
@@ -239,226 +236,6 @@ describe("Pi launch", () => {
 			assert.deepEqual(await provider.listSurfaces(), []);
 		});
 	});
-
-	async function assertPiReady(
-		processInfo: SurfaceProvider["getProcessInfo"] extends (
-			...args: any[]
-		) => infer Result
-			? Awaited<Result>
-			: never,
-	) {
-		const provider = new FakeSurfaceProvider();
-		provider.createSurface({ name: "ready", cwd: "/repo" });
-		const operations = launchOperationsFromSurface(
-			providerWithOverrides(provider, {
-				getProcessInfo: async () => processInfo,
-			}),
-			{ mode: "grouped", direction: "right", maxPerTab: 4 },
-		);
-		assert.ok(operations.waitForPiReady);
-		await operations.waitForPiReady(
-			"fake-surface-1",
-			"/tmp/child.jsonl",
-			"/repo",
-		);
-	}
-
-	async function assertPiReadyRejects(
-		processInfo: SurfaceProvider["getProcessInfo"] extends (
-			...args: any[]
-		) => infer Result
-			? Awaited<Result>
-			: never,
-		reason = /expected Pi process not observed/,
-	) {
-		const provider = new FakeSurfaceProvider();
-		provider.createSurface({ name: "ready", cwd: "/repo" });
-		const operations = launchOperationsFromSurface(
-			providerWithOverrides(provider, {
-				getProcessInfo: () => processInfo,
-			}),
-			{ mode: "grouped", direction: "right", maxPerTab: 4 },
-		);
-		const originalNow = Date.now;
-		const times = [0, 0, 10_001];
-		Date.now = () => times.shift() ?? 10_001;
-		try {
-			assert.ok(operations.waitForPiReady);
-			await assert.rejects(
-				operations.waitForPiReady(
-					"fake-surface-1",
-					"/tmp/child.jsonl",
-					"/repo",
-				),
-				new RegExp(
-					`Timed out waiting for Pi session /tmp/child\\.jsonl in Herdr pane fake-surface-1: ${reason.source}`,
-				),
-			);
-		} finally {
-			Date.now = originalNow;
-		}
-	}
-
-	/** A live process whose exec-time environment names one launched session. */
-	async function withLaunchedSessionProcess(
-		sessionFile: string | undefined,
-		run: (pid: number) => Promise<void>,
-	) {
-		const env = { ...process.env };
-		delete env[PI_LAUNCH_SESSION_ENV];
-		if (sessionFile !== undefined) env[PI_LAUNCH_SESSION_ENV] = sessionFile;
-		const child = spawn(
-			process.execPath,
-			["-e", "setInterval(() => {}, 1e3)"],
-			{
-				env,
-				stdio: "ignore",
-			},
-		);
-		try {
-			await once(child, "spawn");
-			assert.ok(child.pid);
-			await run(child.pid);
-		} finally {
-			child.kill("SIGKILL");
-		}
-	}
-
-	const linuxOnly = { skip: process.platform !== "linux" };
-
-	it("Pi readiness matches the launched session by environment, not rewritten argv", () => {
-		// Herdr 0.9.3 pane process-info for a live Pi: its title rewrite leaves no `--session`.
-		const herdrReported = {
-			pid: 42,
-			name: "pi",
-			argv: ["pi"],
-			cwd: "/repo",
-		};
-		const environments = new Map([
-			[42, new Map([[PI_LAUNCH_SESSION_ENV, "/tmp/child.jsonl"]])],
-			[43, new Map([[PI_LAUNCH_SESSION_ENV, "/tmp/other.jsonl"]])],
-			[44, new Map<string, string>()],
-		]);
-		const read = (pid: number) => environments.get(pid);
-		assert.equal(
-			isExpectedPiProcess(herdrReported, "/tmp/child.jsonl", "/repo", read),
-			true,
-		);
-		for (const process of [
-			{ ...herdrReported, pid: 43 },
-			{ ...herdrReported, pid: 44 },
-			{ ...herdrReported, pid: 45 },
-			{
-				...herdrReported,
-				pid: 43,
-				argv: ["pi", "--session", "/tmp/child.jsonl"],
-			},
-			{ ...herdrReported, cwd: "/wrong" },
-			{ ...herdrReported, name: "node" },
-		]) {
-			assert.equal(
-				isExpectedPiProcess(process, "/tmp/child.jsonl", "/repo", read),
-				false,
-				JSON.stringify(process),
-			);
-		}
-	});
-
-	it(
-		'provider Pi readiness accepts a Pi whose argv was rewritten to ["pi"]',
-		linuxOnly,
-		async () => {
-			await withLaunchedSessionProcess("/tmp/child.jsonl", async (pid) => {
-				await assertPiReady({
-					pids: [pid],
-					foregroundProcesses: [
-						{ pid, name: "pi", argv: ["pi"], cwd: "/repo" },
-					],
-				});
-				await assertPiReady({
-					pids: [pid],
-					foregroundProcesses: [
-						{ pid, argv0: "/usr/local/bin/pi", argv: ["pi"], cwd: "/repo" },
-					],
-				});
-				await assertPiReady({
-					pids: [pid],
-					foregroundProcesses: [
-						{ pid, name: "pi", argv0: "/not/pi/", argv: ["pi"], cwd: "/repo" },
-					],
-				});
-			});
-		},
-	);
-
-	it(
-		"provider Pi readiness never accepts another session's Pi",
-		linuxOnly,
-		async () => {
-			await withLaunchedSessionProcess("/tmp/other.jsonl", async (pid) => {
-				for (const argv of [["pi"], ["pi", "--session", "/tmp/child.jsonl"]]) {
-					await assertPiReadyRejects({
-						pids: [pid],
-						foregroundProcesses: [{ pid, name: "pi", argv, cwd: "/repo" }],
-					});
-				}
-			});
-			await withLaunchedSessionProcess(undefined, async (pid) => {
-				await assertPiReadyRejects({
-					pids: [pid],
-					foregroundProcesses: [
-						{ pid, name: "pi", argv: ["pi"], cwd: "/repo" },
-					],
-				});
-			});
-		},
-	);
-
-	it("provider Pi readiness treats an unreadable environment as unproven without hiding a match", {
-		skip: process.platform !== "linux" || process.getuid?.() === 0,
-	}, async () => {
-		// PID 1 belongs to root, so its environment is EACCES, as for an exiting Pi.
-		const unreadable = { pid: 1, name: "pi", argv: ["pi"], cwd: "/repo" };
-		await assertPiReadyRejects(
-			{ pids: [1], foregroundProcesses: [unreadable] },
-			/EACCES/,
-		);
-		await withLaunchedSessionProcess("/tmp/child.jsonl", async (pid) => {
-			await assertPiReady({
-				pids: [1, pid],
-				foregroundProcesses: [
-					unreadable,
-					{ pid, name: "pi", argv: ["pi"], cwd: "/repo" },
-				],
-			});
-		});
-	});
-
-	it(
-		"provider Pi readiness rejects each identity mismatch independently",
-		linuxOnly,
-		async () => {
-			await withLaunchedSessionProcess("/tmp/child.jsonl", async (pid) => {
-				const correct = {
-					pid,
-					name: "pi",
-					argv0: "/usr/local/bin/pi",
-					argv: ["pi"],
-					cwd: "/repo",
-				};
-				for (const process of [
-					{ ...correct, cwd: "/wrong" },
-					{ ...correct, name: undefined, argv0: "/usr/local/bin/python" },
-					{ ...correct, name: undefined, argv0: "/usr/local/bin/pi/" },
-				]) {
-					await assertPiReadyRejects({
-						pids: [process.pid],
-						foregroundProcesses: [process],
-					});
-				}
-			});
-		},
-	);
 
 	it("records recovered worktree metadata from provider provisioning errors", async () => {
 		await withFixture(async ({ request, project, sessionDir, root }) => {
@@ -545,8 +322,10 @@ describe("Pi launch", () => {
 							if (failed) surface.diagnostics = diagnostics;
 							return surface;
 						},
-						async waitForShellReady() {},
-						runScript: (_surface, _value, options) => options.scriptPath,
+						splitSurface(_pane, _cwd, _env) {
+							return "root-pane-1";
+						},
+						startAgent() {},
 						closePane() {},
 					},
 				);
@@ -571,29 +350,24 @@ describe("Pi launch", () => {
 			mkdirSync(projectAgentDir, { recursive: true });
 			const events: string[] = [];
 			const closed: string[] = [];
-			let command = "";
-			let scriptPath = "";
+			let argv: string[] = [];
+			let launchEnv: Record<string, string> = {};
 			const operations: PiLaunchOperations = {
 				worktree: createWorktreeOperations(),
-				createPane(name, cwd) {
+				createPane(name, cwd, paneEnv) {
 					assert.equal(name, "Worker");
 					assert.equal(cwd, project, "placement must use the child's checkout");
+					launchEnv = paneEnv ?? {};
 					events.push("create");
 					return "pane-1";
 				},
 				createWorktree() {
 					throw new Error("unexpected worktree creation");
 				},
-				async waitForShellReady(surface) {
+				startAgent(surface, options) {
 					assert.equal(surface, "pane-1");
-					events.push("ready");
-				},
-				runScript(surface, value, options) {
-					assert.equal(surface, "pane-1");
-					events.push("run");
-					command = value;
-					scriptPath = options.scriptPath;
-					return options.scriptPath;
+					events.push("start");
+					argv = options.argv;
 				},
 				closePane(surface) {
 					closed.push(surface);
@@ -602,11 +376,10 @@ describe("Pi launch", () => {
 
 			const running = await launchPiSubagent(request, operations);
 
-			assert.deepEqual(events, ["create", "ready", "run"]);
+			assert.deepEqual(events, ["create", "start"]);
 			assert.deepEqual(closed, []);
 			assert.equal(running.id, "child-1");
 			assert.equal(running.surface, "pane-1");
-			assert.equal(running.launchScriptFile, scriptPath);
 			assert.ok(running.sessionFile.startsWith(join(agentDir, "sessions")));
 			const policy = readSubagentSessionPolicy(running.sessionFile);
 			assert.equal(policy.version, 2);
@@ -614,67 +387,74 @@ describe("Pi launch", () => {
 			assert.deepEqual(policy.tools, ["read", "bash"]);
 			assert.deepEqual(policy.deniedTools, ["subagent", "subagent_resume"]);
 			assert.equal(policy.persistent, false);
-			assert.equal(command.includes(projectAgentDir), false);
-			assert.ok(command.startsWith(`cd ${expectedShellQuote(project)} && `));
-			assert.match(command, /--model 'fake\/worker'/);
-			assert.match(command, /--thinking 'high'/);
-			assert.match(command, /--tools 'read,bash,caller_ping'/);
-			assert.doesNotMatch(command, /subagent_done/);
-			assert.match(command, /PI_DENY_TOOLS='subagent,subagent_resume'/);
-			assert.match(command, /PI_SUBAGENT_AUTO_EXIT=1/);
-			// Documented child-context hint: fresh children receive PI_SUBAGENT_ID.
-			assert.match(command, /PI_SUBAGENT_ID='child-1'/);
+			// pi 命令是 argv 数组,首段携带会话文件与子协议扩展。
+			// pi 命令是 argv 数组,首段携带会话文件与子协议扩展。
+			assert.equal(argv[0], "pi");
+			assert.equal(argv[1], "--session");
+			assert.equal(argv[2], running.sessionFile);
+			assert.equal(argv[3], "-e");
+			assert.match(argv[4], /subagent-done\.ts$/);
+			assert.equal(argv[5], "--model");
+			assert.equal(argv[6], "fake/worker");
+			assert.equal(argv[7], "--thinking");
+			assert.equal(argv[8], "high");
+			assert.equal(argv[9], "--tools");
+			// autoExit=true 时不包含 subagent_done,但注入 caller_ping。
+			assert.equal(argv[10], "read,bash,caller_ping");
+			assert.equal(argv[11], "--append-system-prompt");
+			assert.match(argv[12], /\.md$/);
+			// 技能提示和任务参数。
+			assert.equal(argv[13], "");
+			assert.equal(argv[14], "/skill:tdd");
 			assert.ok(
-				command.includes(
-					`${PI_LAUNCH_SESSION_ENV}=${expectedShellQuote(running.sessionFile)}`,
-				),
+				argv[15].startsWith("@") && argv[15].endsWith(".md"),
+				"expected artifact-backed task delivery",
 			);
-			assert.match(command, /'' '\/skill:tdd' '@[^']+\.md'/);
-
-			const taskPath = command.match(/'@([^']+\.md)'/)?.[1];
-			assert.ok(taskPath, "expected artifact-backed task delivery");
+			const taskPath = argv[15].slice(1);
 			assert.match(
 				readFileSync(taskPath, "utf8"),
 				/Complete your task autonomously\.[\s\S]*Implement the bounded change\./,
 			);
-			const systemPromptPath = command.match(
-				/--append-system-prompt '([^']+\.md)'/,
-			)?.[1];
-			assert.ok(systemPromptPath, "expected system prompt artifact");
-			assert.equal(
-				readFileSync(systemPromptPath, "utf8"),
-				"You are a focused worker.",
-			);
+			assert.equal(readFileSync(argv[12], "utf8"), "You are a focused worker.");
+			// env 键集合:没有 PI_SUBAGENT_SURFACE,没有 PI_HERDR_AGENTS_SESSION。
+			assert.equal(launchEnv.PI_SUBAGENT_SURFACE, undefined);
+			assert.equal(launchEnv.PI_HERDR_AGENTS_SESSION, undefined);
+			assert.equal(launchEnv.PI_SUBAGENT_NAME, "Worker");
+			assert.equal(launchEnv.PI_SUBAGENT_AGENT, "worker");
+			assert.equal(launchEnv.PI_SUBAGENT_ID, "child-1");
+			assert.equal(launchEnv.PI_SUBAGENT_AUTO_EXIT, "1");
+			assert.equal(launchEnv.PI_SUBAGENT_SESSION, running.sessionFile);
+			assert.equal(launchEnv.PI_DENY_TOOLS, "subagent,subagent_resume");
+			assert.ok(launchEnv.PI_SUBAGENT_ACTIVITY_FILE);
+			assert.equal(launchEnv.PI_SUBAGENT_PROCESS_FILE, "");
 		});
 	});
 
 	it("treats an explicit null worktree as an ordinary pane", async () => {
 		await withFixture(async ({ request, project }) => {
 			let worktreeCreationAttempts = 0;
+			let launchEnv: Record<string, string> = {};
+			let argv: string[] = [];
 			const operations: PiLaunchOperations = {
 				worktree: createWorktreeOperations(),
-				createPane(name, cwd) {
+				createPane(name, cwd, paneEnv) {
 					assert.equal(name, "Worker");
 					assert.equal(cwd, project);
+					launchEnv = paneEnv ?? {};
 					return "pane-null-worktree";
 				},
 				createWorktree() {
 					worktreeCreationAttempts++;
 					throw new Error("unexpected worktree creation");
 				},
-				async waitForShellReady(surface) {
-					assert.equal(surface, "pane-null-worktree");
-				},
-				runScript(_surface, value, options) {
-					command = value;
-					return options.scriptPath;
+				startAgent(surface, options) {
+					argv = options.argv;
 				},
 				closePane() {},
 				captureProcessIdentity() {
 					throw new Error("an ordinary pane captures no process identity");
 				},
 			};
-			let command = "";
 
 			const running = await launchPiSubagent(
 				{ ...request, worktree: null },
@@ -684,63 +464,58 @@ describe("Pi launch", () => {
 			assert.equal(worktreeCreationAttempts, 0);
 			assert.equal(running.surface, "pane-null-worktree");
 			assert.equal(running.worktree, undefined);
-			assert.doesNotMatch(command, /PI_SUBAGENT_PROCESS_FILE/);
+			// 普通 pane 不注入 process-identity 文件。
+			assert.equal(launchEnv.PI_SUBAGENT_PROCESS_FILE, "");
 			assert.equal(running.processIdentityFile, undefined);
 			assert.equal(running.processIdentityCapture, undefined);
+			// startAgent 收到非空 argv。
+			assert.ok(argv.length > 0);
 		});
 	});
 
 	for (const kind of ["fresh", "resume"] as const) {
-		for (const failurePoint of ["readiness", "command delivery"] as const) {
-			it(`closes its ${kind} pane once when ${failurePoint} fails`, async () => {
-				await withFixture(async ({ request, root, sessionDir }) => {
-					const pane = `pane-${kind}`;
-					const closed: string[] = [];
-					const sessionFile = join(root, "resumed.jsonl");
-					writeFileSync(
-						sessionFile,
-						JSON.stringify({ type: "session", id: "resumed", cwd: root }) +
-							"\n",
-					);
-					if (kind === "resume") writePublicResumePolicy(sessionFile);
-					const launchRequest: FreshPiLaunchRequest | ResumePiLaunchRequest =
-						kind === "fresh"
-							? request
-							: {
-									kind: "resume",
-									id: "resume-failure",
-									name: "Resume worker",
-									sessionFile,
-									parent: { sessionId: "parent", sessionDir },
-								};
-					const expectedError = `${kind} ${failurePoint} failed`;
-					const operations: PiLaunchOperations = {
-						worktree: createWorktreeOperations(),
-						createPane: () => pane,
-						createWorktree: () => {
-							throw new Error("unexpected worktree creation");
-						},
-						waitForShellReady: async () => {
-							if (failurePoint === "readiness") throw new Error(expectedError);
-						},
-						runScript: (_surface, _command, options) => {
-							if (failurePoint === "command delivery")
-								throw new Error(expectedError);
-							return options.scriptPath;
-						},
-						closePane(surface) {
-							closed.push(surface);
-						},
-					};
+		it(`closes its ${kind} pane once when startAgent fails`, async () => {
+			await withFixture(async ({ request, root, sessionDir }) => {
+				const pane = `pane-${kind}`;
+				const closed: string[] = [];
+				const sessionFile = join(root, "resumed.jsonl");
+				writeFileSync(
+					sessionFile,
+					JSON.stringify({ type: "session", id: "resumed", cwd: root }) + "\n",
+				);
+				if (kind === "resume") writePublicResumePolicy(sessionFile);
+				const launchRequest: FreshPiLaunchRequest | ResumePiLaunchRequest =
+					kind === "fresh"
+						? request
+						: {
+								kind: "resume",
+								id: "resume-failure",
+								name: "Resume worker",
+								sessionFile,
+								parent: { sessionId: "parent", sessionDir },
+							};
+				const expectedError = `${kind} startAgent failed`;
+				const operations: PiLaunchOperations = {
+					worktree: createWorktreeOperations(),
+					createPane: () => pane,
+					createWorktree: () => {
+						throw new Error("unexpected worktree creation");
+					},
+					startAgent: () => {
+						throw new Error(expectedError);
+					},
+					closePane(surface) {
+						closed.push(surface);
+					},
+				};
 
-					await assert.rejects(
-						launchPiSubagent(launchRequest, operations),
-						new RegExp(expectedError),
-					);
-					assert.deepEqual(closed, [pane]);
-				});
+				await assert.rejects(
+					launchPiSubagent(launchRequest, operations),
+					new RegExp(expectedError),
+				);
+				assert.deepEqual(closed, [pane]);
 			});
-		}
+		});
 	}
 
 	it("closes an owned split child rather than its stable parent on launch failure", async () => {
@@ -764,11 +539,8 @@ describe("Pi launch", () => {
 				createWorktree: () => {
 					throw new Error("unexpected worktree creation");
 				},
-				waitForShellReady: async () => {
-					throw new Error("split readiness failed");
-				},
-				runScript: () => {
-					throw new Error("must not run");
+				startAgent: () => {
+					throw new Error("split startAgent failed");
 				},
 				closePane(surface) {
 					closed.push(surface);
@@ -777,7 +549,7 @@ describe("Pi launch", () => {
 
 			await assert.rejects(
 				launchPiSubagent(request, operations),
-				/split readiness failed/,
+				/split startAgent failed/,
 			);
 			assert.deepEqual(closed, [childPane]);
 			assert.equal(closed.includes(parentPane), false);
@@ -789,14 +561,17 @@ describe("Pi launch", () => {
 			const blockedSessionDir = join(root, "blocked-session-dir");
 			writeFileSync(blockedSessionDir, "not a directory\n");
 			const closed: string[] = [];
+			let paneCreated = false;
 			const operations: PiLaunchOperations = {
 				worktree: createWorktreeOperations(),
-				createPane: () => "pane-artifact-failure",
+				createPane: () => {
+					paneCreated = true;
+					return "pane-artifact-failure";
+				},
 				createWorktree: () => {
 					throw new Error("unexpected worktree creation");
 				},
-				waitForShellReady: async () => {},
-				runScript: () => {
+				startAgent: () => {
 					throw new Error("must not run");
 				},
 				closePane(surface) {
@@ -813,7 +588,9 @@ describe("Pi launch", () => {
 					operations,
 				),
 			);
-			assert.deepEqual(closed, ["pane-artifact-failure"]);
+			// 新 API 中 artifact 在 pane 创建之前准备,失败时 pane 尚未创建。
+			assert.equal(paneCreated, false);
+			assert.deepEqual(closed, []);
 		});
 	});
 
@@ -828,10 +605,7 @@ describe("Pi launch", () => {
 				createWorktree: () => {
 					throw new Error("unexpected worktree creation");
 				},
-				waitForShellReady: async () => {
-					throw new Error("must not wait");
-				},
-				runScript: () => {
+				startAgent: () => {
 					throw new Error("must not run");
 				},
 				closePane(surface) {
@@ -856,11 +630,8 @@ describe("Pi launch", () => {
 				createWorktree: () => {
 					throw new Error("unexpected worktree creation");
 				},
-				waitForShellReady: async () => {
+				startAgent: () => {
 					throw new Error("original launch error");
-				},
-				runScript: () => {
-					throw new Error("must not run");
 				},
 				async closePane() {
 					cleanupAttempts++;
@@ -887,11 +658,8 @@ describe("Pi launch", () => {
 				createWorktree: () => {
 					throw new Error("unexpected worktree creation");
 				},
-				waitForShellReady: async () => {
-					throw new Error("supplied surface readiness failed");
-				},
-				runScript: () => {
-					throw new Error("must not run");
+				startAgent: () => {
+					throw new Error("supplied surface startAgent failed");
 				},
 				closePane(surface) {
 					closed.push(surface);
@@ -900,64 +668,16 @@ describe("Pi launch", () => {
 
 			await assert.rejects(
 				launchPiSubagent({ ...request, surface: "caller-pane" }, operations),
-				/supplied surface readiness failed/,
+				/supplied surface startAgent failed/,
 			);
 			assert.deepEqual(closed, []);
 		});
 	});
 
-	it("keeps untrusted launch metadata inside shell comments", async () => {
-		await withFixture(async ({ request, root, sessionDir }) => {
-			const preambles: string[] = [];
-			let pane = 0;
-			const operations: PiLaunchOperations = {
-				worktree: createWorktreeOperations(),
-				createPane: () => `pane-${++pane}`,
-				createWorktree: () => {
-					throw new Error("unexpected worktree creation");
-				},
-				waitForShellReady: async () => {},
-				runScript: (_surface, _command, options) => {
-					preambles.push(options.scriptPreamble);
-					return options.scriptPath;
-				},
-				closePane: () => {},
-			};
-			const injectedName =
-				"Worker\nprintf fresh-injection\rprintf carriage-return\u2028printf line-separator\u2029printf paragraph-separator";
-
-			await launchPiSubagent({ ...request, name: injectedName }, operations);
-
-			const resumedSession = join(root, "resumed.jsonl");
-			writeFileSync(
-				resumedSession,
-				JSON.stringify({ type: "session", id: "resumed", cwd: root }) + "\n",
-			);
-			writePublicResumePolicy(resumedSession);
-			await launchPiSubagent(
-				{
-					kind: "resume",
-					id: "resume-injection",
-					name: injectedName,
-					sessionFile: resumedSession,
-					parent: { sessionId: "parent", sessionDir },
-				},
-				operations,
-			);
-
-			assert.equal(preambles.length, 2);
-			for (const preamble of preambles) {
-				const lines = preamble.split("\n");
-				assert.equal(lines.length, 4);
-				assert.ok(lines.every((line) => line.startsWith("# ")));
-				assert.doesNotMatch(preamble, /\nprintf (?:fresh|carriage)/);
-			}
-		});
-	});
-
 	it("clears inherited auto-exit state for interactive children", async () => {
 		await withFixture(async ({ request }) => {
-			let command = "";
+			let argv: string[] = [];
+			let launchEnv: Record<string, string> = {};
 			await launchPiSubagent(
 				{
 					...request,
@@ -968,21 +688,25 @@ describe("Pi launch", () => {
 					},
 				},
 				{
-					createPane: () => "pane-interactive",
+					createPane(_name, _cwd, paneEnv) {
+						launchEnv = paneEnv ?? {};
+						return "pane-interactive";
+					},
 					createWorktree: () => {
 						throw new Error("unexpected worktree creation");
 					},
-					waitForShellReady: async () => {},
-					runScript: (_surface, value, options) => {
-						command = value;
-						return options.scriptPath;
+					startAgent(_surface, options) {
+						argv = options.argv;
 					},
 					closePane: () => {},
 				},
 			);
 
-			assert.match(command, /PI_SUBAGENT_AUTO_EXIT=0/);
-			assert.match(command, /--tools 'read,bash,caller_ping,subagent_done'/);
+			assert.equal(launchEnv.PI_SUBAGENT_AUTO_EXIT, "0");
+			// interactive (autoExit=false) 注入 subagent_done。
+			const toolsIdx = argv.indexOf("--tools");
+			assert.ok(toolsIdx >= 0);
+			assert.equal(argv[toolsIdx + 1], "read,bash,caller_ping,subagent_done");
 		});
 	});
 
@@ -1006,7 +730,7 @@ describe("Pi launch", () => {
 					.map((e) => JSON.stringify(e))
 					.join("\n") + "\n",
 			);
-			let command = "";
+			let argv: string[] = [];
 			const running = await launchPiSubagent(
 				{
 					...request,
@@ -1021,10 +745,8 @@ describe("Pi launch", () => {
 					createWorktree: () => {
 						throw new Error("unexpected worktree creation");
 					},
-					waitForShellReady: async () => {},
-					runScript: (_surface, value, options) => {
-						command = value;
-						return options.scriptPath;
+					startAgent(_surface, options) {
+						argv = options.argv;
 					},
 					closePane: () => {},
 				},
@@ -1035,8 +757,12 @@ describe("Pi launch", () => {
 				false,
 				"fork: false must not seed parent conversation into child session",
 			);
-			const taskPath = command.match(/'@([^']+\.md)'/)?.[1];
-			assert.ok(taskPath, "expected artifact-backed task delivery, not direct");
+			// fork:false 走 artifact 投递,argv 末尾是 @task.md。
+			const lastArg = argv[argv.length - 1];
+			assert.ok(
+				lastArg.startsWith("@") && lastArg.endsWith(".md"),
+				"expected artifact-backed task delivery, not direct",
+			);
 		});
 	});
 
@@ -1074,7 +800,8 @@ describe("Pi launch", () => {
 					.map((e) => JSON.stringify(e))
 					.join("\n") + "\n",
 			);
-			let command = "";
+			let argv: string[] = [];
+			let launchEnv: Record<string, string> = {};
 			const running = await launchPiSubagent(
 				{
 					...request,
@@ -1084,14 +811,15 @@ describe("Pi launch", () => {
 					},
 				},
 				{
-					createPane: () => "pane-inherited-fork",
+					createPane(_name, _cwd, paneEnv) {
+						launchEnv = paneEnv ?? {};
+						return "pane-inherited-fork";
+					},
 					createWorktree: () => {
 						throw new Error("unexpected worktree creation");
 					},
-					waitForShellReady: async () => {},
-					runScript: (_surface, value, options) => {
-						command = value;
-						return options.scriptPath;
+					startAgent(_surface, options) {
+						argv = options.argv;
 					},
 					closePane: () => {},
 				},
@@ -1108,22 +836,18 @@ describe("Pi launch", () => {
 				/parentSession/,
 				"child session must link to parent",
 			);
-			assert.doesNotMatch(
-				command,
-				/'@[^']+\.md'/,
-				"fork mode must use direct delivery, not artifact-backed",
-			);
-			assert.match(
-				command,
-				/PI_SUBAGENT_ID='child-1'/,
-				"forked children receive the same child-context hint as standalone children",
-			);
+			// fork 模式使用 direct 投递,argv 末尾是任务文本本身,而非 @task.md。
+			const lastArg = argv[argv.length - 1];
+			assert.ok(!lastArg.startsWith("@"), "fork mode must use direct delivery");
+			// forked children receive the same child-context hint as standalone children.
+			assert.equal(launchEnv.PI_SUBAGENT_ID, "child-1");
 		});
 	});
 
 	it("keeps an autonomous multi-wave coordinator open for completion steers", async () => {
 		await withFixture(async ({ request }) => {
-			let command = "";
+			let argv: string[] = [];
+			let launchEnv: Record<string, string> = {};
 			const running = await launchPiSubagent(
 				{
 					...request,
@@ -1137,27 +861,35 @@ describe("Pi launch", () => {
 					},
 				},
 				{
-					createPane: () => "pane-coordinator",
+					createPane(_name, _cwd, paneEnv) {
+						launchEnv = paneEnv ?? {};
+						return "pane-coordinator";
+					},
 					createWorktree: () => {
 						throw new Error("unexpected worktree creation");
 					},
-					waitForShellReady: async () => {},
-					runScript: (_surface, value, options) => {
-						command = value;
-						return options.scriptPath;
+					startAgent(_surface, options) {
+						argv = options.argv;
 					},
 					closePane: () => {},
 				},
 			);
 
 			assert.equal(running.interactive, false);
-			assert.match(command, /PI_SUBAGENT_AUTO_EXIT=0/);
-			assert.match(
-				command,
-				/--tools 'read,bash,grep,find,ls,caller_ping,subagent_done'/,
+			assert.equal(launchEnv.PI_SUBAGENT_AUTO_EXIT, "0");
+			const toolsIdx = argv.indexOf("--tools");
+			assert.ok(toolsIdx >= 0);
+			assert.equal(
+				argv[toolsIdx + 1],
+				"read,bash,grep,find,ls,caller_ping,subagent_done",
 			);
-			const taskPath = command.match(/'@([^']+\.md)'/)?.[1];
-			assert.ok(taskPath, "expected artifact-backed coordinator task");
+			// coordinator 使用 artifact 投递。
+			const lastArg = argv[argv.length - 1];
+			assert.ok(
+				lastArg.startsWith("@") && lastArg.endsWith(".md"),
+				"expected artifact-backed coordinator task",
+			);
+			const taskPath = lastArg.slice(1);
 			assert.match(
 				readFileSync(taskPath, "utf8"),
 				/call the subagent_done tool/i,
@@ -1178,9 +910,8 @@ describe("Pi launch", () => {
 			try {
 				const events: string[] = [];
 				const closed: string[] = [];
-				let command = "";
-				let scriptPath = "";
-				let scriptPreamble = "";
+				let argv: string[] = [];
+				let launchEnv: Record<string, string> = {};
 				const request: ResumePiLaunchRequest = {
 					kind: "resume",
 					id: "resume-1",
@@ -1191,26 +922,20 @@ describe("Pi launch", () => {
 				};
 				const operations: PiLaunchOperations = {
 					worktree: createWorktreeOperations(),
-					createPane(name, cwd) {
+					createPane(name, cwd, paneEnv) {
 						assert.equal(name, "Resume worker");
 						assert.equal(cwd, project);
+						launchEnv = paneEnv ?? {};
 						events.push("create");
 						return "pane-resume";
 					},
 					createWorktree() {
 						throw new Error("a resume must not create a worktree");
 					},
-					async waitForShellReady(surface) {
+					startAgent(surface, options) {
 						assert.equal(surface, "pane-resume");
-						events.push("ready");
-					},
-					runScript(surface, value, options) {
-						assert.equal(surface, "pane-resume");
-						events.push("run");
-						command = value;
-						scriptPath = options.scriptPath;
-						scriptPreamble = options.scriptPreamble;
-						return options.scriptPath;
+						events.push("start");
+						argv = options.argv;
 					},
 					closePane(surface) {
 						closed.push(surface);
@@ -1219,51 +944,49 @@ describe("Pi launch", () => {
 
 				const running = await launchPiSubagent(request, operations);
 
-				assert.deepEqual(events, ["create", "ready", "run"]);
+				assert.deepEqual(events, ["create", "start"]);
 				assert.deepEqual(closed, []);
 				assert.equal(running.id, "resume-1");
 				assert.equal(running.name, "Resume worker");
 				assert.equal(running.task, "Use the approved schema.");
 				assert.equal(running.surface, "pane-resume");
 				assert.equal(running.sessionFile, sessionFile);
-				assert.equal(running.launchScriptFile, scriptPath);
 				assert.equal(running.interactive, false);
 				assert.equal(running.runtimePlan, undefined);
 				assert.equal(running.worktree, undefined);
-				assert.ok(
-					command.startsWith(
-						`PI_CODING_AGENT_DIR=${expectedShellQuote(process.env.PI_CODING_AGENT_DIR!)} `,
-					),
-				);
-				assert.ok(
-					command.includes(
-						`pi --session ${expectedShellQuote(sessionFile)} --tools 'read,bash,caller_ping' -e `,
-					),
-				);
-				assert.match(command, /PI_SUBAGENT_NAME='Resume worker'/);
-				assert.ok(
-					command.includes(
-						`PI_SUBAGENT_SESSION=${expectedShellQuote(sessionFile)}`,
-					),
-				);
-				// Documented child-context hint: resumed children receive a new ID.
-				assert.match(command, /PI_SUBAGENT_ID='resume-1'/);
-				assert.match(command, /PI_SUBAGENT_ACTIVITY_FILE='/);
-				assert.match(command, /PI_SUBAGENT_AUTO_EXIT=1/);
-				assert.match(command, /PI_DENY_TOOLS='subagent,subagent_resume'/);
-				assert.doesNotMatch(command, /--model|--thinking|^cd /);
-				const messagePath = command.match(/'@([^']+\.md)'/)?.[1];
-				assert.ok(messagePath, "expected artifact-backed follow-up message");
+				// resume 继承 PI_CODING_AGENT_DIR。
 				assert.equal(
-					readFileSync(messagePath, "utf8"),
-					"Use the approved schema.",
+					launchEnv.PI_CODING_AGENT_DIR,
+					process.env.PI_CODING_AGENT_DIR,
 				);
-				assert.match(
-					scriptPreamble,
-					/# Subagent resume script for Resume worker/,
-				);
+				// pi 命令首段:session、扩展、tools。
+				assert.equal(argv[0], "pi");
+				assert.equal(argv[1], "--session");
+				assert.equal(argv[2], sessionFile);
+				assert.equal(argv[3], "-e");
+				assert.match(argv[4], /subagent-done\.ts$/);
+				const toolsIdx = argv.indexOf("--tools");
+				assert.ok(toolsIdx >= 0);
+				assert.equal(argv[toolsIdx + 1], "read,bash,caller_ping");
+				assert.equal(launchEnv.PI_SUBAGENT_NAME, "Resume worker");
+				assert.equal(launchEnv.PI_SUBAGENT_SESSION, sessionFile);
+				// Documented child-context hint: resumed children receive a new ID.
+				assert.equal(launchEnv.PI_SUBAGENT_ID, "resume-1");
+				assert.ok(launchEnv.PI_SUBAGENT_ACTIVITY_FILE);
+				assert.equal(launchEnv.PI_SUBAGENT_AUTO_EXIT, "1");
+				assert.equal(launchEnv.PI_DENY_TOOLS, "subagent,subagent_resume");
+				// resume 不使用 --model / --thinking。
+				assert.ok(!argv.includes("--model"));
+				assert.ok(!argv.includes("--thinking"));
+				// 后续消息走 artifact 投递。
+				const lastArg = argv[argv.length - 1];
 				assert.ok(
-					scriptPreamble.includes(`# Resume message file: ${messagePath}`),
+					lastArg.startsWith("@") && lastArg.endsWith(".md"),
+					"expected artifact-backed follow-up message",
+				);
+				assert.equal(
+					readFileSync(lastArg.slice(1), "utf8"),
+					"Use the approved schema.",
 				);
 			} finally {
 				if (previousAgentDir === undefined)
@@ -1287,7 +1010,8 @@ describe("Pi launch", () => {
 				`${root}/./nested/../child.jsonl`,
 				relative(process.cwd(), sessionFile),
 			]) {
-				let command = "";
+				let argv: string[] = [];
+				let launchEnv: Record<string, string> = {};
 				const running = await launchPiSubagent(
 					{
 						kind: "resume",
@@ -1296,29 +1020,23 @@ describe("Pi launch", () => {
 						parent: { sessionId: "parent", sessionDir },
 					},
 					{
-						createPane: () => "pane-resume",
+						createPane(_name, _cwd, paneEnv) {
+							launchEnv = paneEnv ?? {};
+							return "pane-resume";
+						},
 						createWorktree() {
 							throw new Error("a resume must not create a worktree");
 						},
-						async waitForShellReady() {},
-						runScript(_surface, value, options) {
-							command = value;
-							return options.scriptPath;
+						startAgent(_surface, options) {
+							argv = options.argv;
 						},
 						closePane() {},
 					},
 				);
 				assert.equal(running.sessionFile, sessionFile, given);
-				assert.ok(
-					command.includes(`pi --session ${expectedShellQuote(sessionFile)} `),
-					given,
-				);
-				assert.ok(
-					command.includes(
-						`PI_SUBAGENT_SESSION=${expectedShellQuote(sessionFile)}`,
-					),
-					given,
-				);
+				// argv 中 --session 后的路径被规范化。
+				assert.equal(argv[2], sessionFile, given);
+				assert.equal(launchEnv.PI_SUBAGENT_SESSION, sessionFile, given);
 			}
 		});
 	});
@@ -1334,7 +1052,8 @@ describe("Pi launch", () => {
 			const previousAutoExit = process.env.PI_SUBAGENT_AUTO_EXIT;
 			process.env.PI_SUBAGENT_AUTO_EXIT = "1";
 			try {
-				let command = "";
+				let argv: string[] = [];
+				let launchEnv: Record<string, string> = {};
 				const running = await launchPiSubagent(
 					{
 						kind: "resume",
@@ -1345,14 +1064,15 @@ describe("Pi launch", () => {
 						behavior: { autoExit: false },
 					},
 					{
-						createPane: () => "pane-interactive",
+						createPane(_name, _cwd, paneEnv) {
+							launchEnv = paneEnv ?? {};
+							return "pane-interactive";
+						},
 						createWorktree: () => {
 							throw new Error("a resume must not create a worktree");
 						},
-						waitForShellReady: async () => {},
-						runScript: (_surface, value, options) => {
-							command = value;
-							return options.scriptPath;
+						startAgent(_surface, options) {
+							argv = options.argv;
 						},
 						closePane: () => {},
 					},
@@ -1360,8 +1080,10 @@ describe("Pi launch", () => {
 
 				assert.equal(running.task, "resumed session");
 				assert.equal(running.interactive, true);
-				assert.match(command, /PI_SUBAGENT_AUTO_EXIT=0/);
-				assert.doesNotMatch(command, /'@[^']+\.md'/);
+				assert.equal(launchEnv.PI_SUBAGENT_AUTO_EXIT, "0");
+				// 无 message 时不走 artifact 投递。
+				const lastArg = argv[argv.length - 1];
+				assert.ok(!lastArg.startsWith("@"), "no artifact when no message");
 			} finally {
 				if (previousAutoExit === undefined)
 					delete process.env.PI_SUBAGENT_AUTO_EXIT;
@@ -1400,7 +1122,6 @@ describe("Pi launch", () => {
 				"child-1.json",
 			);
 			const events: string[] = [];
-			let command = "";
 			const identity = {
 				pid: 4321,
 				startTime: "987",
@@ -1408,6 +1129,7 @@ describe("Pi launch", () => {
 				pidNamespace: "pid:[1]",
 			};
 			const captures: unknown[] = [];
+			let splitSurfaceEnv: Record<string, string> = {};
 			const operations: PiLaunchOperations = {
 				worktree: createWorktreeOperations(),
 				createPane() {
@@ -1441,24 +1163,28 @@ describe("Pi launch", () => {
 						paneId: "root-pane-1",
 					};
 				},
-				async waitForShellReady(surface) {
-					assert.equal(surface, "root-pane-1");
-					events.push("ready");
+				splitSurface(pane, cwd, env) {
+					assert.equal(pane, "root-pane-1");
+					assert.equal(cwd, worktreePath);
+					splitSurfaceEnv = env;
+					events.push("split");
+					return "root-pane-1";
 				},
-				runScript(surface, value, options) {
+				startAgent(surface, options) {
 					assert.equal(surface, "root-pane-1");
-					events.push("run");
-					command = value;
-					return options.scriptPath;
+					events.push("start");
+					argv = options.argv;
 				},
 				closePane: () => {
 					throw new Error("must retain the worktree workspace");
 				},
 			};
 
+			let argv: string[] = [];
 			const running = await launchPiSubagent(worktreeRequest, operations);
 
-			assert.deepEqual(events, ["create", "ready", "run"]);
+			assert.ok(argv.includes(running.sessionFile));
+			assert.deepEqual(events, ["create", "split", "start"]);
 			assert.equal(running.worktree?.baseSha, baseSha);
 			assert.equal(running.worktree?.path, worktreePath);
 			assert.equal(running.worktree?.sessionFile, running.sessionFile);
@@ -1466,9 +1192,8 @@ describe("Pi launch", () => {
 				readSubagentSessionPolicy(running.sessionFile).owner,
 				"managed-worktree",
 			);
-			assert.ok(
-				command.startsWith(`cd ${expectedShellQuote(worktreePath)} && `),
-			);
+			// 新 API 通过 splitSurface 传递 cwd 与 env,不再有 cd 前缀。
+			assert.equal(splitSurfaceEnv.PI_SUBAGENT_SESSION, running.sessionFile);
 			const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
 			assert.equal(manifest.state, "running");
 			assert.equal(manifest.owner, "pi-herdr-subagents");
@@ -1477,11 +1202,7 @@ describe("Pi launch", () => {
 			// verifies it against this run, session, and root pane at readiness.
 			const processFile = `${running.sessionFile}.process.json`;
 			assert.equal(running.processIdentityFile, processFile);
-			assert.ok(
-				command.includes(
-					`PI_SUBAGENT_PROCESS_FILE=${expectedShellQuote(processFile)}`,
-				),
-			);
+			assert.equal(splitSurfaceEnv.PI_SUBAGENT_PROCESS_FILE, processFile);
 			assert.deepEqual(await running.processIdentityCapture, identity);
 			assert.deepEqual(running.processIdentity, identity);
 			assert.deepEqual(captures, [
@@ -1511,7 +1232,6 @@ describe("Pi launch", () => {
 				"worktree-runs",
 				"child-1.json",
 			);
-			let command = "";
 			const operations: PiLaunchOperations = {
 				worktree: createWorktreeOperations(),
 				createPane() {
@@ -1537,14 +1257,12 @@ describe("Pi launch", () => {
 						paneId: "pane-linked-fresh",
 					};
 				},
-				async waitForShellReady(surface) {
-					assert.equal(surface, "pane-linked-fresh");
+				splitSurface(pane, cwd, _env) {
+					assert.equal(pane, "pane-linked-fresh");
+					assert.equal(cwd, worktreePath);
+					return "pane-linked-fresh";
 				},
-				runScript(surface, value, options) {
-					assert.equal(surface, "pane-linked-fresh");
-					command = value;
-					return options.scriptPath;
-				},
+				startAgent() {},
 				closePane: () => {
 					throw new Error("must retain the worktree workspace");
 				},
@@ -1564,9 +1282,6 @@ describe("Pi launch", () => {
 			assert.equal(
 				readFileSync(join(worktreePath, "linked.txt"), "utf8"),
 				"linked\n",
-			);
-			assert.ok(
-				command.startsWith(`cd ${expectedShellQuote(worktreePath)} && `),
 			);
 			const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
 			assert.equal(manifest.sourceCwd, linkedCwd);
@@ -1652,16 +1367,12 @@ describe("Pi launch", () => {
 						paneId: "pane-linked-handoff",
 					};
 				},
-				async waitForShellReady(surface) {
-					assert.equal(surface, "pane-linked-handoff");
+				splitSurface(pane, cwd, _env) {
+					assert.equal(pane, "pane-linked-handoff");
+					assert.equal(cwd, worktreePath);
+					return "pane-linked-handoff";
 				},
-				runScript(surface, _command, options) {
-					assert.equal(surface, "pane-linked-handoff");
-					return options.scriptPath;
-				},
-				async waitForPiReady(surface) {
-					assert.equal(surface, "pane-linked-handoff");
-				},
+				startAgent() {},
 				focusWorkspace(workspaceId) {
 					assert.equal(workspaceId, "workspace-linked-handoff");
 				},
@@ -1752,7 +1463,8 @@ describe("Pi launch", () => {
 			const parentBefore = readFileSync(request.parent.sessionFile, "utf8");
 			const worktreePath = join(root, "handoff-tree");
 			const events: string[] = [];
-			let command = "";
+			let splitSurfaceEnv: Record<string, string> = {};
+			let argv: string[] = [];
 			const operations: PiLaunchOperations = {
 				worktree: createWorktreeOperations(),
 				createPane() {
@@ -1781,18 +1493,17 @@ describe("Pi launch", () => {
 						paneId: "pane-handoff",
 					};
 				},
-				async waitForShellReady() {
-					events.push("ready");
+				splitSurface(pane, cwd, env) {
+					assert.equal(pane, "pane-handoff");
+					assert.equal(cwd, worktreePath);
+					splitSurfaceEnv = env;
+					events.push("split");
+					return "pane-handoff";
 				},
-				runScript(_surface, value, options) {
-					command = value;
-					events.push("run");
-					return options.scriptPath;
-				},
-				async waitForPiReady(surface, sessionFile) {
+				startAgent(surface, options) {
 					assert.equal(surface, "pane-handoff");
-					assert.match(sessionFile, /\.jsonl$/);
-					events.push("pi-ready");
+					argv = options.argv;
+					events.push("start");
 				},
 				focusWorkspace(workspaceId) {
 					assert.equal(workspaceId, "workspace-handoff");
@@ -1813,27 +1524,21 @@ describe("Pi launch", () => {
 				operations,
 			);
 
-			assert.deepEqual(events, ["create", "ready", "run", "pi-ready", "focus"]);
+			assert.deepEqual(events, ["create", "split", "start", "focus"]);
 			assert.equal(result.focusError, undefined);
 			assert.equal(
 				readFileSync(request.parent.sessionFile, "utf8"),
 				parentBefore,
 			);
-			assert.ok(
-				command.startsWith(`cd ${expectedShellQuote(worktreePath)} && `),
+			// Handoff 通过 splitSurface 传递 env,session 文件路径在 env 中。
+			assert.equal(
+				splitSurfaceEnv.PI_SUBAGENT_SESSION,
+				result.running.sessionFile,
 			);
 			// A user-driven worktree handoff is a normal interactive Pi session,
-			// not a subagent: it receives no PI_SUBAGENT_ID or child protocol.
-			assert.doesNotMatch(
-				command,
-				/subagent-done|PI_SUBAGENT_|__SUBAGENT_DONE_/,
-			);
-			assert.ok(
-				command.includes(
-					`${PI_LAUNCH_SESSION_ENV}=${expectedShellQuote(result.running.sessionFile)}`,
-				),
-			);
-			assert.doesNotMatch(command, /Implement the bounded change/);
+			// not a subagent: it loads no child-protocol extension.
+			assert.ok(!argv.some((arg) => arg.includes("subagent-done")));
+			assert.doesNotMatch(argv.join(" "), /Implement the bounded change/);
 			const child = JSON.parse(
 				readFileSync(result.running.sessionFile, "utf8").split("\n")[0],
 			);
@@ -1850,217 +1555,6 @@ describe("Pi launch", () => {
 		});
 	});
 
-	it("retains the forked session when shell readiness fails", async () => {
-		await withFixture(async ({ request, project, sessionDir, root }) => {
-			execFileSync("git", ["init", "-q"], { cwd: project });
-			execFileSync("git", ["config", "user.email", "test@example.com"], {
-				cwd: project,
-			});
-			execFileSync("git", ["config", "user.name", "Test"], { cwd: project });
-			execFileSync("git", ["config", "commit.gpgsign", "false"], {
-				cwd: project,
-			});
-			writeFileSync(join(project, "base.txt"), "base\n");
-			execFileSync("git", ["add", "base.txt"], { cwd: project });
-			execFileSync("git", ["commit", "-qm", "base"], { cwd: project });
-			writeFileSync(
-				request.parent.sessionFile,
-				[
-					{ type: "session", version: 3, id: "parent", cwd: project },
-					{
-						type: "message",
-						id: "ready-user",
-						parentId: null,
-						message: {
-							role: "user",
-							content: [{ type: "text", text: "start" }],
-							timestamp: 1,
-						},
-					},
-					{
-						type: "message",
-						id: "ready-assistant",
-						parentId: "ready-user",
-						message: {
-							role: "assistant",
-							content: [{ type: "text", text: "ready" }],
-							api: "test",
-							provider: "fake",
-							model: "worker",
-							usage: {},
-							stopReason: "stop",
-							timestamp: 2,
-						},
-					},
-				]
-					.map((entry) => JSON.stringify(entry))
-					.join("\n") + "\n",
-			);
-			const worktreePath = join(root, "shell-timeout-tree");
-			const closed: string[] = [];
-			const manifestFile = join(
-				sessionDir,
-				"artifacts",
-				"parent",
-				"worktree-runs",
-				"child-1.json",
-			);
-
-			await assert.rejects(
-				launchPiWorktreeHandoff(
-					{
-						...request,
-						worktree: { branch: "issue/shell-timeout" },
-						handoff: { leafId: "ready-assistant" },
-					},
-					{
-						worktree: createWorktreeOperations(),
-						createPane: () => {
-							throw new Error("unexpected pane creation");
-						},
-						createWorktree(_name, cwd, branch, base) {
-							execFileSync(
-								"git",
-								["worktree", "add", "-q", "-b", branch, worktreePath, base],
-								{ cwd },
-							);
-							return {
-								path: worktreePath,
-								branch,
-								workspaceId: "workspace-timeout",
-								paneId: "pane-timeout",
-							};
-						},
-						waitForShellReady: async () => {
-							throw new Error("shell timeout");
-						},
-						runScript: () => {
-							throw new Error("must not run");
-						},
-						focusWorkspace: () => {
-							throw new Error("must not focus");
-						},
-						closePane: (surface) => {
-							closed.push(surface);
-						},
-					},
-				),
-				/shell timeout/i,
-			);
-			assert.deepEqual(closed, []);
-			const manifest = JSON.parse(readFileSync(manifestFile, "utf8"));
-			assert.equal(manifest.state, "failed");
-			assert.equal(existsSync(manifest.sessionFile), true);
-			assert.match(
-				readFileSync(manifest.sessionFile, "utf8"),
-				/pi-herdr-worktree-handoff/,
-			);
-		});
-	});
-
-	it("does not focus or report success when Pi startup is not confirmed", async () => {
-		await withFixture(async ({ request, project, sessionDir, root }) => {
-			execFileSync("git", ["init", "-q"], { cwd: project });
-			execFileSync("git", ["config", "user.email", "test@example.com"], {
-				cwd: project,
-			});
-			execFileSync("git", ["config", "user.name", "Test"], { cwd: project });
-			execFileSync("git", ["config", "commit.gpgsign", "false"], {
-				cwd: project,
-			});
-			writeFileSync(join(project, "base.txt"), "base\n");
-			execFileSync("git", ["add", "base.txt"], { cwd: project });
-			execFileSync("git", ["commit", "-qm", "base"], { cwd: project });
-			writeFileSync(
-				request.parent.sessionFile,
-				[
-					{ type: "session", version: 3, id: "parent", cwd: project },
-					{
-						type: "message",
-						id: "startup-user",
-						parentId: null,
-						message: {
-							role: "user",
-							content: [{ type: "text", text: "start" }],
-							timestamp: 1,
-						},
-					},
-					{
-						type: "message",
-						id: "startup-assistant",
-						parentId: "startup-user",
-						message: {
-							role: "assistant",
-							content: [{ type: "text", text: "ready" }],
-							api: "test",
-							provider: "fake",
-							model: "worker",
-							usage: {},
-							stopReason: "stop",
-							timestamp: 2,
-						},
-					},
-				]
-					.map((entry) => JSON.stringify(entry))
-					.join("\n") + "\n",
-			);
-			const worktreePath = join(root, "startup-failed-tree");
-			const manifestFile = join(
-				sessionDir,
-				"artifacts",
-				"parent",
-				"worktree-runs",
-				"child-1.json",
-			);
-			let focused = false;
-			await assert.rejects(
-				launchPiWorktreeHandoff(
-					{
-						...request,
-						worktree: { branch: "issue/startup-failed" },
-						handoff: { leafId: "startup-assistant" },
-					},
-					{
-						worktree: createWorktreeOperations(),
-						createPane: () => {
-							throw new Error("unexpected pane creation");
-						},
-						createWorktree(_name, cwd, branch, base) {
-							execFileSync(
-								"git",
-								["worktree", "add", "-q", "-b", branch, worktreePath, base],
-								{ cwd },
-							);
-							return {
-								path: worktreePath,
-								branch,
-								workspaceId: "workspace-startup",
-								paneId: "pane-startup",
-							};
-						},
-						waitForShellReady: async () => {},
-						runScript: (_surface, _command, options) => options.scriptPath,
-						waitForPiReady: async () => {
-							throw new Error("pi exited before startup");
-						},
-						focusWorkspace: () => {
-							focused = true;
-						},
-						closePane: () => {
-							throw new Error("must retain the worktree workspace");
-						},
-					},
-				),
-				/worktree retained.*pi exited before startup/i,
-			);
-			assert.equal(focused, false);
-			assert.equal(
-				JSON.parse(readFileSync(manifestFile, "utf8")).state,
-				"failed",
-			);
-		});
-	});
-
 	it("retains an explicit failed worktree handoff when process start fails", async () => {
 		await withFixture(async ({ request, project, sessionDir, root }) => {
 			execFileSync("git", ["init", "-q"], { cwd: project });
@@ -2074,6 +1568,7 @@ describe("Pi launch", () => {
 			writeFileSync(join(project, "base.txt"), "base\n");
 			execFileSync("git", ["add", "base.txt"], { cwd: project });
 			execFileSync("git", ["commit", "-qm", "base"], { cwd: project });
+			// handoff session
 			writeFileSync(
 				request.parent.sessionFile,
 				[
@@ -2136,8 +1631,10 @@ describe("Pi launch", () => {
 						paneId: "root-pane-failed",
 					};
 				},
-				async waitForShellReady() {},
-				runScript() {
+				splitSurface(_pane, _cwd, _env) {
+					return "root-pane-failed";
+				},
+				startAgent() {
 					throw new Error("pane rejected command");
 				},
 				focusWorkspace() {

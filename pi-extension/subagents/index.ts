@@ -870,7 +870,6 @@ interface RunningSubagent {
 	surface: string;
 	startTime: number;
 	sessionFile: string;
-	launchScriptFile?: string;
 	activityFile?: string;
 	activity?: SubagentActivityState;
 	activityRead?: {
@@ -3414,7 +3413,6 @@ export default function subagentsExtension(
 						id,
 						name,
 						sessionPath: params.sessionPath,
-						launchScriptFile: started.launchScriptFile,
 						status: "started",
 					},
 				};

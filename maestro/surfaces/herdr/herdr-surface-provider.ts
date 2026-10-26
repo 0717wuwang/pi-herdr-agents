@@ -31,10 +31,12 @@ import {
 	renameHerdrWorkspace,
 	sendHerdrCommand,
 	sendHerdrKeys,
+	splitHerdrSurface,
+	startHerdrAgent,
 	waitForHerdrPaneAbsence,
 	waitForHerdrShellReady,
 } from "./herdr.ts";
-import { runScriptInPane, terminalSetupHint } from "./terminal.ts";
+import { terminalSetupHint } from "./terminal.ts";
 
 export class HerdrSurfaceProvider implements SurfaceProvider {
 	readonly name = "herdr";
@@ -56,24 +58,36 @@ export class HerdrSurfaceProvider implements SurfaceProvider {
 				opts.cwd,
 				this.#paneConfig.maxPerTab,
 				this.#paneConfig.direction,
+				opts.env,
 			);
 		}
 		if (placement.kind === "split") {
-			return createHerdrSurfaceSplit(opts.name, placement.direction, opts.cwd);
+			return createHerdrSurfaceSplit(
+				opts.name,
+				placement.direction,
+				opts.cwd,
+				opts.env,
+			);
 		}
-		return createHerdrSurface(opts.name, opts.cwd);
+		return createHerdrSurface(opts.name, opts.cwd, opts.env);
+	}
+
+	splitSurface(
+		sourceId: string,
+		opts: { cwd: string; env?: Record<string, string> },
+	): string {
+		return splitHerdrSurface(sourceId, opts.cwd, opts.env);
 	}
 
 	runCommand(surfaceId: string, command: string): void {
 		sendHerdrCommand(surfaceId, command);
 	}
 
-	runScript(
+	async startAgent(
 		surfaceId: string,
-		command: string,
-		options: { scriptPath: string; scriptPreamble: string },
-	): string {
-		return runScriptInPane(surfaceId, command, options);
+		options: { name: string; kind: string; argv: string[] },
+	): Promise<void> {
+		await startHerdrAgent(surfaceId, options.name, options.kind, options.argv);
 	}
 
 	readScreen(surfaceId: string, lines?: number): Promise<string> {

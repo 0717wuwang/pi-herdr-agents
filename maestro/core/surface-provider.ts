@@ -30,12 +30,24 @@ export interface SurfaceInfo {
 	workspaceId?: string;
 }
 
+/**
+ * Named owner contract for the process variables a surface is created with.
+ * An interface keeps producers from widening an already-known object into an
+ * anonymous dictionary while they accumulate the keys they must set.
+ */
+export interface SurfaceEnvironment {
+	[key: string]: string;
+}
+
 export interface CreateSurfaceOptions {
 	name: string;
 	cwd: string;
 	/** Default: { kind: "grouped" }. */
 	// pi-herdr-agents extension
 	placement?: SurfacePlacement;
+	/** Variables passed to the surface's shell process. */
+	// pi-herdr-agents extension
+	env?: SurfaceEnvironment;
 }
 
 export interface CreateWorktreeSurfaceOptions {
@@ -116,6 +128,16 @@ export interface SurfaceProvider {
 	/** Create a new surface (tab/pane/window). Returns the surface id. */
 	createSurface(opts: CreateSurfaceOptions): string | Promise<string>;
 
+	/**
+	 * Recreate a surface so it can carry explicit variables. Herdr's
+	 * `worktree create` has no `--env`, so a worktree's hosting pane is
+	 * replaced here. Returns the replacement's id.
+	 */
+	// pi-herdr-agents extension
+	splitSurface(
+		sourceId: string,
+		opts: { cwd: string; env?: Record<string, string> },
+	): string | Promise<string>;
 	/** Run a shell command in the surface (sends text + Enter). */
 	runCommand(surfaceId: string, command: string): void | Promise<void>;
 
@@ -161,13 +183,12 @@ export interface SurfaceProvider {
 	// pi-herdr-agents extension
 	setupHint(): string;
 
-	/** Write a script file and run it in the surface; today's runScriptInPane (terminal.ts:115). */
+	/** Start a supported interactive agent in an existing surface via the provider's native launcher. */
 	// pi-herdr-agents extension
-	runScript(
+	startAgent(
 		surfaceId: string,
-		command: string,
-		options: { scriptPath: string; scriptPreamble: string },
-	): string;
+		options: { name: string; kind: string; argv: string[] },
+	): void | Promise<void>;
 
 	// pi-herdr-agents extension
 	inspectSurface(surfaceId: string): Promise<PaneInspection>;

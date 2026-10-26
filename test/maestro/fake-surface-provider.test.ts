@@ -28,7 +28,7 @@ registerSurfaceProviderConformance(
 );
 
 describe("FakeSurfaceProvider controls", () => {
-	it("records commands and runScript intent without executing shell or writing scripts", async () => {
+	it("records commands and startAgent intent without executing shell or writing scripts", async () => {
 		const provider = new FakeSurfaceProvider();
 		const surfaceId = await provider.createSurface({
 			name: "commands",
@@ -36,15 +36,15 @@ describe("FakeSurfaceProvider controls", () => {
 		});
 
 		await provider.runCommand(surfaceId, "echo fake-marker");
-		const scriptCommand = provider.runScript(surfaceId, "echo scripted", {
-			scriptPath: "/tmp/should-not-be-created.sh",
-			scriptPreamble: "set -e",
+		provider.startAgent(surfaceId, {
+			name: "child",
+			kind: "pi",
+			argv: ["pi", "--session", "/tmp/session.jsonl"],
 		});
 
-		assert.equal(scriptCommand, "/tmp/should-not-be-created.sh");
 		assert.deepEqual(provider.commands(surfaceId), [
 			"echo fake-marker",
-			"echo scripted",
+			"herdr agent start child --kind pi -- pi --session /tmp/session.jsonl",
 		]);
 		assert.match(await provider.readScreen(surfaceId), /fake-marker/);
 	});

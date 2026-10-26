@@ -136,6 +136,29 @@ export class FakeSurfaceProvider implements SurfaceProvider {
 		return worktree;
 	}
 
+	/** Split a pane into its replacement carrying process variables. */
+	splitSurface(
+		pane: string,
+		options: { cwd: string; env: Record<string, string> },
+	): string {
+		const source = this.#surface(pane);
+		const replacement = this.createSurface({
+			name: source.name,
+			cwd: options.cwd,
+			placement: { kind: "tab" },
+			env: options.env,
+		});
+		const moved = source.workspaceId
+			? this.#worktrees.get(source.workspaceId)
+			: undefined;
+		this.#surfaces.delete(pane);
+		if (moved) {
+			moved.surfaceId = replacement;
+			this.#worktrees.set(source.workspaceId!, moved);
+		}
+		return replacement;
+	}
+
 	removeWorktreeSurface(
 		workspaceId: string,
 		_opts?: { timeoutMs?: number },
@@ -159,22 +182,20 @@ export class FakeSurfaceProvider implements SurfaceProvider {
 		return "Fake surface provider is always available in memory.";
 	}
 
-	runScript(
+	startAgent(
 		surfaceId: string,
-		command: string,
-		options: { scriptPath: string; scriptPreamble: string },
-	): string {
+		options: { name: string; kind: string; argv: string[] },
+	): void {
 		const surface = this.#surface(surfaceId);
+		const command = `herdr agent start ${options.name} --kind ${options.kind} -- ${options.argv.join(" ")}`;
 		surface.commands.push(command);
-		surface.screen.push(`$ ${options.scriptPath}`);
-		if (options.scriptPreamble.length > 0) {
-			surface.screen.push(options.scriptPreamble);
-		}
+		surface.screen.push(
+			`$ herdr agent start ${options.name} --kind ${options.kind}`,
+		);
 		const echoText = echoOutput(command);
 		if (echoText !== null) {
 			surface.screen.push(echoText);
 		}
-		return options.scriptPath;
 	}
 
 	async inspectSurface(surfaceId: string): Promise<PaneInspection> {
