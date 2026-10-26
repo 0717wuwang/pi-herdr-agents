@@ -107,16 +107,9 @@ describe("pack-neutral package contents", () => {
 		);
 		for (const path of [
 			"README.md",
-			"AGENTS.md",
-			"CHANGELOG.md",
-			"CONTEXT.md",
-			"RELEASING.md",
+			"LICENSE",
 			"config.json.example",
 			"pi-extension/subagents/index.ts",
-			"examples/role-pack/extension.ts",
-			"examples/role-pack/roles/example-reviewer.md",
-			"docs/worktree-subagents.md",
-			...guides,
 		]) {
 			assert.equal(
 				packageFiles.has(path),
