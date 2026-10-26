@@ -119,9 +119,8 @@ Use `PI_TEST_MODEL="openai-codex/gpt-5.6-luna" PI_TEST_TIMEOUT=180000 npm run te
 Before committing:
 
 - inspect `git status` and the final diff;
-- confirm the package preview includes `CHANGELOG.md`, `README.md`, `config.json.example`, and `pi-extension/subagents/index.ts`, contains no `agents/` resources, no `skills/` resources other than the host-owned `skills/pi-herdr-agents/SKILL.md`, and no `pi-extension/subagents/plan-skill.md`, and excludes `pi-extension/subagents/workflow-worker.js`, plans, journals, sessions, prototypes, generated evidence, local config, and `openspec/`;
-- run `npm pack --dry-run` when package contents or documentation paths changed; durable configuration is `$PI_CODING_AGENT_DIR/herdr-agents/config.json`, never package-root `config.json` (move old files manually or re-run `/subagents-init`);
-- confirm that no generated plans, journals, sessions, provider configuration, test scripts, or review artifacts are staged; and
+- run `npm pack --dry-run` when package contents changed; follow the [npm-publish skill](.pi/skills/npm-publish/SKILL.md) for the `files` whitelist and exclusion rules;
+- confirm that no generated plans, journals, sessions, provider configuration, test scripts, or review artifacts are staged;
 - confirm that no accidental empty directory exists at the repository root:
 
 ```bash

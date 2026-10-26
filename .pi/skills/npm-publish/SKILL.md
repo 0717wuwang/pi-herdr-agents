@@ -1,73 +1,82 @@
 ---
 name: npm-publish
-description: Publish an npm package from scratch. Use when creating a new scoped package, bootstrapping a package on npm, or performing a manual npm publish with --access public.
+description: Publish an npm package. Use when bootstrapping a scoped package on npm, running npm publish with --access public, or verifying package contents before release.
 ---
 
 # npm Publish
 
-Publish an npm package, including first-time bootstrap for scoped packages.
+## Bootstrap
 
-## Bootstrap a new scoped package
-
-Required when the package does not exist on npm yet. After this, steady-state releases use CI-driven trusted publishing.
-
-### 1. npm login
+First publish of a new package. After this, steady-state uses CI trusted publishing.
 
 ```bash
 npm login
 npm whoami
-```
-
-npm requires 2FA (Authenticator App recommended).
-
-### 2. Publish
-
-```bash
 npm publish --access public
+npm view @scope/name
 ```
 
-`--access public` is required for scoped packages (`@scope/name`). Without it, the package is published as private.
+`--access public` is required for scoped packages (`@scope/name`). Without it, the package is private.
 
-### 3. Verify
+## Package contents
+
+`package.json` `files` is a **whitelist**: only listed paths are packed. Safer than `.npmignore` blacklist.
+
+Runtime essentials only — no development artifacts:
+
+```json
+{
+  "files": [
+    "pi-extension/",
+    "maestro/",
+    "plugins/",
+    "skills/",
+    "README.md",
+    "LICENSE",
+    "config.json.example"
+  ]
+}
+```
+
+**Exclude** these categories:
+- Tests: `test/`, `__tests__/`, `*.test.*`
+- Dev tools: `.vscode/`, `.github/`, `tools/`
+- Documentation: `docs/` (access via GitHub), `AGENTS.md`, `CONTEXT.md`, `RELEASING.md`
+- Examples: `examples/`
+- Logs, journals, sessions, prototypes, generated evidence
+- Local config: `config.json`, `.env`, `openspec/`
+- Role resources: `agents/`, `skills/` outside host-owned, `pi-extension/subagents/plan-skill.md`
+- Dead code: `pi-extension/subagents/workflow-worker.js`
+
+## Pre-publish verification
 
 ```bash
-npm view @scope/name
-npm install -g @scope/name
+npm pack --dry-run
 ```
+
+Confirm the tarball contains only runtime essentials. Check for sensitive files (`.env`, credentials).
 
 ## Version management
 
-Use semantic versioning. `npm version` auto-updates `package.json` and creates a git tag.
-
-| Increment | When | Example |
-|-----------|------|---------|
-| `patch` | Bug fixes, no API change | `1.0.0` → `1.0.1` |
-| `minor` | New features, backward compatible | `1.0.0` → `1.1.0` |
-| `major` | Breaking changes | `1.0.0` → `2.0.0` |
+Semantic versioning. `npm version` auto-updates `package.json` and creates a git tag.
 
 ```bash
-npm version patch   # auto-updates version + creates tag
-npm publish         # publishes
+npm version patch      # bug fix: 1.0.0 → 1.0.1
+npm version minor      # feature:   1.0.0 → 1.1.0
+npm version major      # breaking:  1.0.0 → 2.0.0
+npm publish            # publishes
 ```
 
-Or skip the tag:
+Skip the tag for CI-driven release:
 
 ```bash
 npm version patch --no-git-tag-version
 git add package.json package-lock.json CHANGELOG.md
 git commit -m "chore: release v$(node -p "require('./package.json').version")"
-git push origin main  # triggers CI release workflow
+git push origin main
 ```
 
-## Pre-publish checklist
-
-- `package.json` name, version, description correct
-- `files` whitelist only contains required directories (safer than `.npmignore` blacklist)
-- `engines` declares minimum Node.js version
-- `repository` and `homepage` point to GitHub
-- `npm pack --dry-run` shows only expected files, no `.env` or sensitive data
-- README has a 30-second quickstart
-- `npm login` authenticated
+Do not bump `package.json` for documentation or implementation-only changes. A version change on `main` triggers the release workflow.
 
 ## package.json essentials
 
@@ -79,7 +88,7 @@ git push origin main  # triggers CI release workflow
   "bin": { "command": "bin/cli.mjs" },
   "files": ["bin", "src", "templates"],
   "engines": { "node": ">=18" },
-  "description": "One-line description for npm search",
+  "description": "One-line description",
   "keywords": ["keyword1", "keyword2"],
   "repository": { "type": "git", "url": "https://github.com/owner/repo" },
   "homepage": "https://github.com/owner/repo#readme",
@@ -88,21 +97,22 @@ git push origin main  # triggers CI release workflow
 }
 ```
 
-## CI publishing (trusted publishing)
+## CI trusted publishing
 
-After the package exists on npm, configure GitHub Actions trusted publishing:
+After bootstrap, configure GitHub Actions:
 
 1. npmjs.com → package settings → trusted publishers
 2. Add GitHub Actions: org/user, repo, workflow filename, allowed action `npm publish`
-3. Workflow job needs `permissions.id-token: write` on a GitHub-hosted runner
-4. Publish with: `npm publish --access public --provenance`
+3. Workflow job: `permissions.id-token: write` on GitHub-hosted runner
+4. Publish: `npm publish --access public --provenance`
 
-CI also needs `npm token create --cidr=0.0.0.0/0` for the NPM_TOKEN secret, or use tokenless OIDC.
+CI needs `npm token create --cidr=0.0.0.0/0` for NPM_TOKEN, or use tokenless OIDC.
 
-## Common pitfalls
+## Pitfalls
 
-1. **Missing build step** — add `prepublishOnly` script
-2. **Sensitive files in tarball** — always run `npm pack --dry-run`
-3. **Package name taken** — add scope prefix: `@yourname/tool-name`
-4. **Version already published** — npm versions are immutable; bump and republish
-5. **2FA in CI** — use automation token: `npm token create --cidr=0.0.0.0/0`
+1. **Missing build** — add `prepublishOnly` script
+2. **Sensitive files** — always `npm pack --dry-run`
+3. **Name taken** — add scope: `@yourname/tool-name`
+4. **Version immutable** — bump and republish; never republish same version
+5. **2FA in CI** — use automation token
+6. **Credentials committed** — never commit npm tokens, session artifacts, or local config
