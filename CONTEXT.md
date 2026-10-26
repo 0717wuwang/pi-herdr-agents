@@ -89,11 +89,11 @@ clears only this plugin's view and reports a view that another tool owns.
 _Avoid_: hiding processes, notification filter, automatic view, popup
 
 **Pi startup confirmation**:
-The bounded check that a `/worktree` handoff's Pi is running before its
-workspace is focused: a Pi process in the root pane with the worktree cwd whose
-launch-time environment names the launched session in
-`PI_HERDR_AGENTS_SESSION`. Nothing inside Pi reads that marker.
-_Avoid_: argv match, `--session` visibility, child-context hint
+Herdr's own detection of the launched agent. The pane's shell runs
+`herdr agent start`, which returns only after Herdr finds the agent in that
+terminal and the agent can accept input. No marker environment variable and
+no platform-specific process inspection are involved.
+_Avoid_: `/proc` env match, argv match, `--session` visibility, child-context hint
 
 **No-progress advisory**:
 An internal warning that an active child shows no durable progress in its session
