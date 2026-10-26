@@ -387,35 +387,33 @@ describe("Pi launch", () => {
 			assert.deepEqual(policy.tools, ["read", "bash"]);
 			assert.deepEqual(policy.deniedTools, ["subagent", "subagent_resume"]);
 			assert.equal(policy.persistent, false);
-			// pi 命令是 argv 数组,首段携带会话文件与子协议扩展。
-			// pi 命令是 argv 数组,首段携带会话文件与子协议扩展。
-			assert.equal(argv[0], "pi");
-			assert.equal(argv[1], "--session");
-			assert.equal(argv[2], running.sessionFile);
-			assert.equal(argv[3], "-e");
-			assert.match(argv[4], /subagent-done\.ts$/);
-			assert.equal(argv[5], "--model");
-			assert.equal(argv[6], "fake/worker");
-			assert.equal(argv[7], "--thinking");
-			assert.equal(argv[8], "high");
-			assert.equal(argv[9], "--tools");
-			// autoExit=true 时不包含 subagent_done,但注入 caller_ping。
-			assert.equal(argv[10], "read,bash,caller_ping");
-			assert.equal(argv[11], "--append-system-prompt");
-			assert.match(argv[12], /\.md$/);
+			// pi 参数是 argv 数组；`--kind pi` 已声明 agent，argv 里不再重复 pi。
+			assert.equal(argv[0], "--session");
+			assert.equal(argv[1], running.sessionFile);
+			assert.equal(argv[2], "-e");
+			assert.match(argv[3], /subagent-done\.ts$/);
+			assert.equal(argv[4], "--model");
+			assert.equal(argv[5], "fake/worker");
+			assert.equal(argv[6], "--thinking");
+			assert.equal(argv[7], "high");
+			assert.equal(argv[8], "--tools");
+			// autoExit=true 时不包含 subagent_done，但注入 caller_ping。
+			assert.equal(argv[9], "read,bash,caller_ping");
+			assert.equal(argv[10], "--append-system-prompt");
+			assert.match(argv[11], /\.md$/);
 			// 技能提示和任务参数。
-			assert.equal(argv[13], "");
-			assert.equal(argv[14], "/skill:tdd");
+			assert.equal(argv[12], "");
+			assert.equal(argv[13], "/skill:tdd");
 			assert.ok(
-				argv[15].startsWith("@") && argv[15].endsWith(".md"),
+				argv[14].startsWith("@") && argv[14].endsWith(".md"),
 				"expected artifact-backed task delivery",
 			);
-			const taskPath = argv[15].slice(1);
+			const taskPath = argv[14].slice(1);
 			assert.match(
 				readFileSync(taskPath, "utf8"),
 				/Complete your task autonomously\.[\s\S]*Implement the bounded change\./,
 			);
-			assert.equal(readFileSync(argv[12], "utf8"), "You are a focused worker.");
+			assert.equal(readFileSync(argv[11], "utf8"), "You are a focused worker.");
 			// env 键集合:没有 PI_SUBAGENT_SURFACE,没有 PI_HERDR_AGENTS_SESSION。
 			assert.equal(launchEnv.PI_SUBAGENT_SURFACE, undefined);
 			assert.equal(launchEnv.PI_HERDR_AGENTS_SESSION, undefined);
@@ -959,12 +957,11 @@ describe("Pi launch", () => {
 					launchEnv.PI_CODING_AGENT_DIR,
 					process.env.PI_CODING_AGENT_DIR,
 				);
-				// pi 命令首段:session、扩展、tools。
-				assert.equal(argv[0], "pi");
-				assert.equal(argv[1], "--session");
-				assert.equal(argv[2], sessionFile);
-				assert.equal(argv[3], "-e");
-				assert.match(argv[4], /subagent-done\.ts$/);
+				// pi 参数：session、扩展、tools。
+				assert.equal(argv[0], "--session");
+				assert.equal(argv[1], sessionFile);
+				assert.equal(argv[2], "-e");
+				assert.match(argv[3], /subagent-done\.ts$/);
 				const toolsIdx = argv.indexOf("--tools");
 				assert.ok(toolsIdx >= 0);
 				assert.equal(argv[toolsIdx + 1], "read,bash,caller_ping");
@@ -1035,7 +1032,7 @@ describe("Pi launch", () => {
 				);
 				assert.equal(running.sessionFile, sessionFile, given);
 				// argv 中 --session 后的路径被规范化。
-				assert.equal(argv[2], sessionFile, given);
+				assert.equal(argv[1], sessionFile, given);
 				assert.equal(launchEnv.PI_SUBAGENT_SESSION, sessionFile, given);
 			}
 		});

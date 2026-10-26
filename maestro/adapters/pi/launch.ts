@@ -811,7 +811,6 @@ function buildPiArgv(
 ): string[] {
 	const behavior = resolved.request.behavior;
 	const argv = [
-		"pi",
 		"--session",
 		artifacts.sessionFile,
 		...(!resolved.request.handoff
@@ -989,7 +988,6 @@ async function launchResumedPiSubagent(
 		env.PI_DENY_TOOLS = policy.deniedTools.join(",");
 	}
 	const argv = [
-		"pi",
 		"--session",
 		request.sessionFile,
 		"-e",
