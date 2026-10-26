@@ -6,6 +6,9 @@ description: Release pi-herdr-agents when the user explicitly requests a release
 # Release pi-herdr-agents
 
 Read [`RELEASING.md`](../../../RELEASING.md) before you act. It is the canonical release contract.
+## Bootstrap a new package
+
+When the package does not exist on npm yet (first publish), use the [`npm-publish`](../npm-publish/SKILL.md) skill for the manual bootstrap flow (`npm login` → `npm publish --access public`). After the package exists, return to this skill for CI-driven releases.
 
 ## Prepare the release
 
