@@ -16,7 +16,7 @@ Do not design a release that creates a GitHub Release without a successful npm p
 
 You need:
 
-- Permission to manage this repository's GitHub Actions settings and npm package access for `@1368/pi-herdr-agents`
+- Permission to manage this repository's GitHub Actions settings and npm package access for `pi-herdr-subagent-tool`
 - A clean local `main` branch
 
 The **CI** workflow (`.github/workflows/ci.yml`) runs on pushes and pull
@@ -59,7 +59,7 @@ Do not release from skipped Herdr tests. Confirm the package preview includes `R
 
 After the package exists on npm, steady-state releases use npm trusted publishing (OIDC). No long-lived `NPM_TOKEN` is required.
 
-1. Open the package settings for `@1368/pi-herdr-agents` on [npmjs.com](https://www.npmjs.com/).
+1. Open the package settings for `pi-herdr-subagent-tool` on [npmjs.com](https://www.npmjs.com/).
 2. Add a trusted publisher for GitHub Actions with:
    - Organization or user: `0717wuwang`
    - Repository: `pi-herdr-agents`
@@ -100,16 +100,16 @@ You can rerun a failed or incomplete release from **Actions → Release → Run 
 After the workflow succeeds, inspect the published package:
 
 ```bash
-npm view @1368/pi-herdr-agents
+npm view pi-herdr-subagent-tool
 ```
 
 Test installation through Pi:
 
 ```bash
-pi install npm:@1368/pi-herdr-agents
+pi install npm:pi-herdr-subagent-tool
 ```
 
-The package should appear at <https://pi.dev/packages/@1368/pi-herdr-agents> after the gallery indexes the npm release.
+The package should appear at <https://pi.dev/packages/pi-herdr-subagent-tool> after the gallery indexes the npm release.
 
 ## Troubleshooting
 

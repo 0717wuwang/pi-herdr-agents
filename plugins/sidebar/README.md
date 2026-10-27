@@ -2,7 +2,7 @@
 
 ![Pi Herdr Agents: a parent Pi session delegating to parallel child agents in dedicated Herdr panes, an isolated worktree and a retained session, with a live status widget.](https://raw.githubusercontent.com/0717wuwang/pi-herdr-agents/main/docs/assets/pi-herdr-agents-gallery.png)
 
-> **Compatibility.** Sidebar support requires `pi-herdr-agents` version `3.2.0` or later. On macOS it requires a release newer than `3.2.1`.
+> **Compatibility.** Sidebar support requires `pi-herdr-subagent-tool` version `3.2.0` or later. On macOS it requires a release newer than `3.2.1`.
 
 An optional [Herdr](https://herdr.dev) plugin for [Pi Herdr Agents](../../README.md). It keeps your main agents easy to find in Herdr's Agents view while [Pi](https://github.com/earendil-works/pi) runs delegated children.
 
@@ -21,7 +21,7 @@ The plugin adds two actions. The extension in the main package marks each delega
 - Herdr `0.9.0` or later. `0.9.0` is the first release with `agent.view.set` and `agent.view.clear`, the only Herdr methods the actions call, so the manifest declares `min_herdr_version = "0.9.0"`. The plugin was tested on `0.9.1` and `0.9.2-preview.2026-09-29-8e78f929d8f0`; other builds are untested. A build without the agent view API makes Focus and All fail with Herdr's error.
 - Linux or macOS. The manifest declares `linux` and `macos`. Windows is untested and not declared.
 - `node` on the `PATH` of the Herdr server. Herdr runs the actions as `node sidebar.mjs focus` and `node sidebar.mjs all`.
-- The `pi-herdr-agents` extension version `3.2.0` or later, installed in Pi with `sidebar.enabled` turned on. Without markers, Focus hides nothing. Versions `3.2.0` and `3.2.1` identify children through Linux `/proc`, so they mark nothing on macOS.
+- The `pi-herdr-subagent-tool` extension version `3.2.0` or later, installed in Pi with `sidebar.enabled` turned on. Without markers, Focus hides nothing. Versions `3.2.0` and `3.2.1` identify children through Linux `/proc`, so they mark nothing on macOS.
 - Herdr's Pi integration, installed in the Pi agent directory your parent and children use. The extension marks a child only while Herdr reports that child's own session file for its pane, and Herdr learns it from this integration. Check for `herdr-agent-state.ts` in `$PI_CODING_AGENT_DIR/extensions/`, or install it with `herdr integration install pi`.
 
 ## Install
@@ -46,10 +46,10 @@ If Herdr's Pi integration is not installed yet, install it. It reports each Pi s
 herdr integration install pi
 ```
 
-If you do not already load `pi-herdr-agents` version `3.2.0` or later, install the latest npm release in Pi:
+If you do not already load `pi-herdr-subagent-tool` version `3.2.0` or later, install the latest npm release in Pi:
 
 ```bash
-pi install npm:@1368/pi-herdr-agents
+pi install npm:pi-herdr-subagent-tool
 ```
 
 Use `pi list` to check your existing package sources. If a copy from another source is enabled, disable that copy with `pi config` before loading the npm package. Do not load both copies. Start Pi inside Herdr.

@@ -100,7 +100,7 @@
       <rect width="1424" height="1" fill="#ffffff" fill-opacity="0.1"/>
       <circle cx="10" cy="41" r="6" fill="#59dcae" filter="url(#glow)"/>
       <text x="30" y="47" fill="#d6dde4" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">non-blocking · supervised · recoverable</text>
-      <text x="1424" y="47" text-anchor="end" fill="#717d90" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">npm:@1368/pi-herdr-agents</text>
+      <text x="1424" y="47" text-anchor="end" fill="#717d90" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">npm:pi-herdr-subagent-tool</text>
     </g>
   </g>
   <rect x="1" y="1" width="1598" height="898" rx="33" fill="none" stroke="#ffffff" stroke-opacity="0.13" stroke-width="2"/>

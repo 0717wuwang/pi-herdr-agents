@@ -1,6 +1,6 @@
 # Pi Herdr Agents
 
-[![npm version](https://img.shields.io/npm/v/%401368%2fpi-herdr-agents)](https://www.npmjs.com/package/%401368%2fpi-herdr-agents)
+[![npm version](https://img.shields.io/npm/v/pi-herdr-subagent-tool)](https://www.npmjs.com/package/pi-herdr-subagent-tool)
 [![CI](https://github.com/0717wuwang/pi-herdr-agents/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/0717wuwang/pi-herdr-agents/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -9,6 +9,7 @@
 Asynchronous subagents for [Pi](https://github.com/earendil-works/pi), running exclusively in [Herdr](https://herdr.dev).
 
 Delegate investigation, implementation, and review without blocking the parent session. Each child runs as a real Pi process in its own Herdr pane. Its result comes back to the parent automatically when it finishes.
+> **Published as** `pi-herdr-subagent-tool`. This is a republish of upstream [pi-herdr-agents](https://github.com/giuseppecrj/pi-herdr-agents); the npm name changed because `pi-herdr-agents` is already published by the upstream author. The extension, sidebar plugin, skill, marker, and configuration identifiers keep the original `pi-herdr-agents` name. Compatibility notes citing versions `3.2.0` and `3.2.1` refer to that upstream line.
 
 > **Agents:** load the operating guide with `/skill:pi-herdr-agents`. It covers launching, supervising, interrupting, cancelling, and resuming children, worktrees, persistent specialists, model routing, and configuration. The source is [`skills/pi-herdr-agents/SKILL.md`](skills/pi-herdr-agents/SKILL.md). Contributors: read [`AGENTS.md`](AGENTS.md).
 
@@ -44,14 +45,14 @@ Other terminal multiplexers are not supported. Session startup skips worktree in
 Install from npm:
 
 ```bash
-pi install npm:@1368/pi-herdr-agents
+pi install npm:pi-herdr-subagent-tool
 ```
 
 Install project-locally, or try it for one run:
 
 ```bash
-pi install -l npm:@1368/pi-herdr-agents
-pi -e npm:@1368/pi-herdr-agents
+pi install -l npm:pi-herdr-subagent-tool
+pi -e npm:pi-herdr-subagent-tool
 ```
 
 Then start Pi inside Herdr:
@@ -250,7 +251,7 @@ A `read, bash` allowlist is not a read-only boundary, because shell commands can
 
 The optional [Pi Herdr Agents Sidebar](plugins/sidebar/README.md) Herdr plugin adds two actions. Focus hides delegated Pi children from Herdr's Agents view. All removes this plugin's filter. It needs:
 
-- `pi-herdr-agents` version `3.2.0` or later, with `sidebar.enabled` turned on. On macOS, a release newer than `3.2.1`.
+- `pi-herdr-subagent-tool` version `3.2.0` or later, with `sidebar.enabled` turned on. On macOS, a release newer than `3.2.1`.
 - Linux or macOS
 - Herdr's Pi integration (`herdr integration install pi`), which reports each child's session to Herdr. The extension marks a child only while Herdr reports that child's own session.
 - Herdr `0.9.0` or later, the first release with the agent view API. Tested on `0.9.1` and `0.9.2-preview.2026-09-29-8e78f929d8f0`; other builds are untested.
@@ -308,7 +309,7 @@ See [Configuration](docs/configuration.md) for every key, the task-model writer,
 - The extension creates Herdr panes, tabs and managed worktrees only when a launch asks for them. It never pushes, merges, opens pull requests, deletes branches or removes worktrees on its own; cleanup is an explicit parent action ([worktree cleanup](docs/tools.md#explicit-worktree-cleanup)).
 - What it writes: `$PI_CODING_AGENT_DIR/herdr-agents/config.json` (only through `/subagents-init` or the writer tool, never on startup); per-launch artifacts under the parent session's `artifacts/<session-id>/` directory beside Pi's session store, which hold the child's full task text and any `systemPrompt` as Markdown files, activity snapshots and worktree manifests; and the child's own Pi session file. A managed worktree that carries its own `.pi/agent` directory receives that child's session inside the checkout. Treat task text as potentially sensitive when you share or inspect those files.
 - Managed worktree children record their PID, process start time, boot ID, and PID namespace in `<session>.process.json` beside their session. With [`sidebar.enabled`](docs/configuration.md#sidebar-markers), the parent reads each child pane's agent session from Herdr and reports one display-only pane token, `piha_delegated_v1`, on that pane through the Herdr socket. With the setting off, the extension writes no pane metadata.
-- To uninstall: first list and remove any retained worktrees while the extension is still loaded (`/worktree list`, then `/worktree remove <target>`), because those commands leave with the package. If you installed the optional sidebar plugin, remove it with `herdr plugin uninstall pi-herdr-agents.sidebar` (or `herdr plugin unlink` for a linked copy). Then run `pi remove npm:@1368/pi-herdr-agents`, and delete `$PI_CODING_AGENT_DIR/herdr-agents/` and the `artifacts/` directories above if you no longer want the configuration and launch records.
+- To uninstall: first list and remove any retained worktrees while the extension is still loaded (`/worktree list`, then `/worktree remove <target>`), because those commands leave with the package. If you installed the optional sidebar plugin, remove it with `herdr plugin uninstall pi-herdr-agents.sidebar` (or `herdr plugin unlink` for a linked copy). Then run `pi remove npm:pi-herdr-subagent-tool`, and delete `$PI_CODING_AGENT_DIR/herdr-agents/` and the `artifacts/` directories above if you no longer want the configuration and launch records.
 
 ## Troubleshooting
 

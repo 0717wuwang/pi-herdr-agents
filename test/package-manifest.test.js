@@ -63,7 +63,7 @@ const packageFiles = new Set(packedEntry.files.map(({ path }) => path));
 
 describe("production package manifest", () => {
 	it("declares the public npm identity and publish metadata", () => {
-		assert.equal(manifest.name, "@1368/pi-herdr-agents");
+		assert.equal(manifest.name, "pi-herdr-subagent-tool");
 		assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
 		assert.equal(manifest.license, "MIT");
 		assert.equal(manifest.publishConfig?.access, "public");

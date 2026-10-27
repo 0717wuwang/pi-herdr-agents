@@ -193,7 +193,7 @@ Install both packages through Pi; the role pack remains inert if
 `pi-herdr-agents` is absent:
 
 ```bash
-pi install npm:@1368/pi-herdr-agents
+pi install npm:pi-herdr-subagent-tool
 pi install npm:@acme/security-roles
 ```
 

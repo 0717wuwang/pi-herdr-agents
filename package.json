@@ -1,5 +1,5 @@
 {
-  "name": "@1368/pi-herdr-agents",
+  "name": "pi-herdr-subagent-tool",
   "version": "3.3.1",
   "description": "Asynchronous Pi subagents in Herdr, with optional isolated Git worktrees",
   "keywords": [

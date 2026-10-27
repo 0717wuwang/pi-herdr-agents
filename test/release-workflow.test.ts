@@ -77,7 +77,7 @@ function runDetect(
 			writeFileSync(
 				join(dir, "package.json"),
 				JSON.stringify({
-					name: "@1368/pi-herdr-agents",
+					name: "pi-herdr-subagent-tool",
 					version: options.previousVersion,
 				}),
 			);
@@ -94,7 +94,7 @@ function runDetect(
 		writeFileSync(
 			join(dir, "package.json"),
 			JSON.stringify({
-				name: "@1368/pi-herdr-agents",
+				name: "pi-herdr-subagent-tool",
 				version: options.currentVersion ?? "0.0.2",
 			}),
 		);
@@ -210,7 +210,7 @@ globalThis.fetch = async (_url, options) => {
 					GITHUB_OUTPUT: output,
 					GITHUB_SHA: "a".repeat(40),
 					NODE_OPTIONS: `--import=${fetchStub}`,
-					PACKAGE_NAME: "@1368/pi-herdr-agents",
+					PACKAGE_NAME: "pi-herdr-subagent-tool",
 					REGISTRY_SCENARIO: scenario,
 					REGISTRY_URL: "https://registry.test/",
 					VERSION: "0.0.2",
@@ -284,7 +284,7 @@ test("release workflow uses package.json identity and trusted publishing", async
 	const workflow = await readFile(".github/workflows/publish.yml", "utf8");
 	const pkg = JSON.parse(await readFile("package.json", "utf8"));
 
-	assert.equal(pkg.name, "@1368/pi-herdr-agents");
+	assert.equal(pkg.name, "pi-herdr-subagent-tool");
 	assert.match(pkg.version, /^\d+\.\d+\.\d+$/);
 	assert.match(pkg.scripts.test, /--experimental-strip-types/);
 	assert.match(pkg.scripts["test:integration"], /--experimental-strip-types/);
